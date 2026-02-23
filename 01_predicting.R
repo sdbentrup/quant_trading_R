@@ -1,6 +1,7 @@
 # forecast stock returns
 # try to predict returns 21-days forward. consider this paper:
 # https://jfin-swufe.springeropen.com/articles/10.1186/s40854-024-00644-0
+# https://www.sciencedirect.com/science/article/pii/S2666827025000143
 
 # packages ----
 # Time Series ML
@@ -75,7 +76,9 @@ calibrate_and_plot <- function(..., type = 'testing', print = T){
 # 1.0 Data ----
 # * symbols for testing ----
 # SP500
-sp500 <- tq_index("SP500")
+sp500 <- tq_index("SP500") #tq_index() options include "DOW"       "DOWGLOBAL" "SP400"     "SP500"     "SP600" 
+
+# could also use tq_exchange("NYSE"), tq_exchange("AMEX") tq_exchange("NASDAQ")
 
 sp500_symbols <- sp500 %>% 
   filter(symbol != "-" & !str_detect(company,"CL C")) %>% 
@@ -128,25 +131,29 @@ add_best_features <- function(prices_dt, price) {
   prices_dt[, Close_macd_signal_50_200_30 := MACD(price_col, 50, 200, 30, maType = "EMA")[, "signal"]]
   prices_dt[, Close_macd_14_30_9 := MACD(price_col, 14, 30, 9, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "macd"]]
   prices_dt[, Close_macd_signal_14_30_9 := MACD(price_col, 14, 30, 9, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "signal"]]
-  prices_dt[, Close_ema_10_norm := EMA(price_col, n = 10) / price_col]
-  prices_dt[, Close_ema_21_norm := EMA(price_col, n = 21) / price_col]
+  prices_dt[, Close_ema_10_norm  := EMA(price_col, n = 10) / price_col]
+  prices_dt[, Close_ema_21_norm  := EMA(price_col, n = 21) / price_col]
   prices_dt[, Close_ppo_line_12_26 := ((EMA(price_col, 12) - EMA(price_col, 26)) / EMA(price_col, 26)) * 100]
   prices_dt[, Close_oscillator_7_14_28 := ultimateOscillator(prices_dt[, .(high, low, price_col)])]
-  prices_dt[, Close_roc_0_1 := ROC(price_col, n = 1)]
-  prices_dt[, Close_roc_0_5 := ROC(price_col, n = 5)]
-  prices_dt[, Close_roc_0_21 := ROC(price_col, n = 21)]
+  prices_dt[, Close_roc_0_1      := ROC(price_col, n = 1)]
+  prices_dt[, Close_roc_0_5      := ROC(price_col, n = 5)]
+  prices_dt[, Close_roc_0_21     := ROC(price_col, n = 21)]
   prices_dt[, Close_roc_0_1_rolling_std_win_63 := frollapply(Close_roc_0_1, 63, sd, fill = NA, align = "right")]
-  prices_dt[, Close_natr_63 := ATR(prices_dt[,.(high, low, price_col)], n = 63)[,"atr"]/eval(quote(get(price)))]
+  prices_dt[, Close_natr_63      := ATR(prices_dt[,.(high, low, price_col)], n = 63)[,"atr"]/eval(quote(get(price)))]
   #prices_dt[, Close_rsi_10 := RSI(eval(quote(get(price))), n = 10)]
-  prices_dt[, Close_rsi_21 := RSI(price_col, n = 21)]
-  prices_dt[, Close_cmo_28 := CMO(price_col, n = 28)]
+  prices_dt[, Close_rsi_21       := RSI(price_col, n = 21)]
+  prices_dt[, Close_cmo_28       := CMO(price_col, n = 28)]
   prices_dt[, Close_rolling_mean_win_126 := standardize_vec(frollmean(price_col, 126))]
   prices_dt[, Close_rolling_std_win_126  := frollapply(price_col, 126, sd)]
-  prices_dt[, Close_SNR_21 := SNR(prices_dt[, .(high, low, price_col)], n = 21)]
-  prices_dt[, Close_rel_vol_14 := 100 - 100 / (1 + runSD(price_col, 14))]
+  prices_dt[, Close_SNR_21       := SNR(prices_dt[, .(high, low, price_col)], n = 21)]
+  prices_dt[, Close_rel_vol_14   := 100 - 100 / (1 + runSD(price_col, 14))]
   prices_dt[, Close_252_max_diff := price_col/frollapply(price_col, 252, max)]
   prices_dt[, Close_252_min_diff := price_col/frollapply(price_col, 252, min)]
-  
+  prices_dt[, Close_kst          := KST(price_col)[,"kst"]]
+  prices_dt[, Close_kst_signal   := KST(price_col)[,"signal"]]
+  prices_dt[, SAR                := SAR(prices_dt[,.(high, low)])]
+  #prices_dt[, Close_kama         := KAMA(price_col)]
+
   prices_dt[, ":=" (intraday = high/low-1, day_return = open/close-1)]
   
   prices_dt[, Vol_WAP_norm := standardize_vec(VWAP(price_col, volume))]
@@ -210,6 +217,7 @@ prices_features_tbl %>%
 
 # chart price features to see if they need to be scaled
 prices_features_tbl %>% 
+    filter(symbol %in% symbols[c(7:27)]) %>% droplevels() %>% 
   select(symbol, starts_with("Close_"),  -contains("_lag_"),
          -contains("_lead_")) %>% 
   pivot_longer(-symbol) %>% 
@@ -223,6 +231,7 @@ prices_features_tbl %>%
         strip.text = element_text(color = "white"))
 
 prices_features_tbl %>% 
+    filter(symbol %in% symbols[c(7:27)]) %>% droplevels() %>% 
   select(symbol, starts_with("Vol_")) %>% 
   pivot_longer(-symbol) %>% 
   filter(!is.na(value)) %>% 
@@ -234,6 +243,25 @@ prices_features_tbl %>%
         strip.background = element_rect("#0076BA"),
         strip.text = element_text(color = "white"))
 
+prices_features_tbl[symbol %in% symbols[c(1:30)],] %>% 
+    plot_ly(x = ~Close_kst, y = ~Return_fwd_21, type = 'scatter', mode = 'markers')
+
+prices_features_tbl[symbol %in% symbols[c(1:30)],][,.(sar = standardize_vec(SAR),Return_fwd_21), keyby = .(symbol)] %>% 
+    plot_ly(x = ~sar, y = ~Return_fwd_21, type = 'scatter', mode = 'markers')
+
+prices_features_tbl %>% 
+    filter(symbol %in% symbols[c(1:50)]) %>% droplevels() %>% 
+    select(symbol, SAR, Close_kst, Close_kst_signal) %>% 
+    pivot_longer(-symbol) %>% 
+    filter(!is.na(value)) %>% 
+    ggplot(aes(y = value, x = symbol, fill = symbol, color = symbol))+
+    geom_boxplot(alpha = 0.7, show.legend = F)+
+    facet_wrap(~name, scales = "free_y")+
+    theme_clean()+
+    theme(axis.text.x = element_text(angle = 30, hjust = 1),
+          strip.background = element_rect("#0076BA"),
+          strip.text = element_text(color = "white"))
+
 prices_features_tbl %>% 
     select(symbol, date, adjusted) %>% 
     pivot_longer(adjusted) %>% 
@@ -242,7 +270,7 @@ prices_features_tbl %>%
                      .facet_ncol = 3)
 
 prices_features_tbl %>% 
-  plot_ly(y = ~Return_fwd_21, x = ~Close_macd_12_26_9)
+  plot_ly(y = ~Return_fwd_21, x = ~Close_macd_14_30_9, type = "scatter")
 
 # earnings data ----
 
@@ -338,9 +366,10 @@ prices_earnings_tbl[, (fill_cols) := lapply(.SD, function(x) nafill(x, "locf")),
 setnafill(prices_earnings_tbl, "const", 0, cols = "ann_nbr")
 
 # this is used later as an interaction variable to see if the time since the announcement affects prediction
-prices_earnings_tbl[,eps_ann_days := round(as.numeric(difftime(date,
+prices_earnings_tbl[,":=" (eps_ann_days = round(as.numeric(difftime(date,
                                                                min(date),
                                                                units = "days")),0),
+                           pe_ratio = act_eps/close),
                     keyby = .(symbol, ann_nbr)]
 
 summary(prices_earnings_tbl)
@@ -576,7 +605,7 @@ full_data <- prices_earnings_econ_tbl %>%
   mutate(symbol = as_factor(symbol)) %>% 
   group_by(symbol) %>% 
   arrange(date) %>% 
-  tk_augment_fourier(date, .periods = c(5,21,60,252), .K = 3) %>%
+  tk_augment_fourier(date, .periods = c(5,21,63,252), .K = 2) %>%
   # tk_augment_timeseries_signature(date) %>% 
   # select(-matches("(.xts$)|(.iso$)|(.hour)|(minute)|(second)|(am.pm)"), -(hour:hour12), -diff) %>% 
     # tk_augment_holiday_signature(date,.holiday_pattern = "US_",.locale_set = "US", .exchange_set = "NYSE") %>% 
@@ -623,7 +652,7 @@ full_data %>%
           colors = c("white","darkgreen"))
 
 # * save data for future use ----
-write_rds(full_data, str_glue("04-Financial/04_01_save_data/{today()}_full_data.rds"))
+write_rds(full_data, str_glue("01_save_data/{today()}_full_data.rds"))
 
 # * remove unneeded data from environment ----
 rm(prices_features_list)
@@ -670,7 +699,7 @@ train_cleaned <- training(splits) %>%
     drop_na(Close_fastqsmom_21_252_126) %>% 
     ungroup()
 
-# plot splits
+# * plot splits ----
 train_cleaned %>% 
     group_by(symbol) %>% 
     plot_time_series(
@@ -684,7 +713,7 @@ train_cleaned %>%
 
 recipe_spec <- recipe(Return_fwd_21 ~ ., data = train_cleaned) %>%
   update_role(rowid, new_role = 'indicator') %>% 
-  update_role(symbol, new_role = 'symbol') %>% 
+  update_role(symbol, new_role = 'symbol') %>%
   step_mutate_at(symbol, fn = droplevels) %>%
   step_timeseries_signature(date) %>% 
   step_rm(matches("(.xts$)|(.iso$)|(.hour)|(.minute)|(.second)|(.am.pm)")) %>% 
@@ -693,16 +722,17 @@ recipe_spec <- recipe(Return_fwd_21 ~ ., data = train_cleaned) %>%
   # step_normalize(index.num,year) %>% 
   step_dummy(all_nominal_predictors(), one_hot = T, keep_original_cols = F) %>%
   step_zv(all_predictors()) %>% 
-  step_nzv(all_predictors()) %>% 
+  step_nzv(all_predictors(), unique_cut = 0.02) %>% 
   step_interact(~eps_growth:eps_ann_days) %>%
   step_interact(~eps_surprise:eps_ann_days) %>%
   step_interact(~value_FEDFUNDS:econ_ann_days) %>%
   step_interact(~value_UNRATE:econ_ann_days) %>%
-  step_interact(~change_CPILFESL:econ_ann_days) #%>%
+  step_interact(~change_CPILFESL:econ_ann_days) %>%
+    step_interact(~unrate_over:econ_ann_days)
   # step_corr(all_numeric_predictors(), threshold = 0.99)
   #step_pca(all_numeric_predictors())
 
-recipe_spec %>% prep() %>% juice() %>% glimpse()
+recipe_spec %>% prep() %>% bake(new_data = train_cleaned %>% slice_sample(prop = 0.3)) %>% glimpse()
 
 # 4.0 HYPERPARAMETER TUNING MODELS ---- 
 
@@ -794,6 +824,18 @@ wflw_fit_lgb_tuned <- wflw_spec_lgb_tune %>%
   finalize_workflow(select_best(tune_results_lgb, metric = "rmse")) %>% 
   fit(train_cleaned)
 
+calibrate_and_plot(wflw_fit_lgb_tuned, print = F)
+
+modeltime_table(wflw_fit_lgb_tuned) %>% 
+    modeltime_calibrate(new_data = testing(splits) %>% 
+                            filter(symbol == "LLY")) %>% 
+    modeltime_forecast(actual_data = data_prepared_tbl %>% 
+                           filter(symbol == "LLY"), 
+                       new_data = testing(splits) %>% 
+                           filter(symbol == "LLY")
+    ) %>% 
+    plot_modeltime_forecast()
+
 gc()
 
 # * XGBOOST TUNE ----
@@ -842,6 +884,7 @@ toc()
 tune_results_xgboost %>% 
     show_best(metric = "rmse", n = Inf)
 
+
 # ** Finalize
 
 tic()
@@ -861,6 +904,8 @@ modeltime_table(wflw_fit_xgboost_tuned) %>%
                        filter(symbol == "LLY")
   ) %>% 
   plot_modeltime_forecast()
+
+calibrate_and_plot(wflw_fit_xgboost_tuned, print =F)
 
 # * EARTH TUNE ----
 
@@ -942,8 +987,6 @@ wflw_fit_glmnet_tuned <- wflw_spec_glmnet_tune %>%
   finalize_workflow(select_best(tune_results_glmnet, metric = "rmse")) %>% 
   fit(train_cleaned)
 
-gc()
-
 modeltime_table(wflw_fit_glmnet_tuned) %>% 
   modeltime_calibrate(new_data = testing(splits) %>% 
                         filter(symbol == "LLY")) %>% 
@@ -953,6 +996,10 @@ modeltime_table(wflw_fit_glmnet_tuned) %>%
                        filter(symbol == "LLY")
   ) %>% 
   plot_modeltime_forecast()
+
+calibrate_and_plot(wflw_fit_glmnet_tuned, print =F)
+
+gc()
 
 # * Prophet Boost TUNE ----
 
@@ -1003,6 +1050,9 @@ toc()
 tune_results_prophet_boost %>% 
   show_best(metric = "rmse", n = Inf)
 
+tune_results_prophet_boost %>% 
+    show_best(metric = "rsq", n = Inf)
+
 # ** Finalize
 
 start_pb <- Sys.time()
@@ -1011,8 +1061,6 @@ wflw_fit_prophet_boost_tuned <- wflw_spec_prophet_boost_tune %>%
   fit(train_cleaned)
 end_pb <- Sys.time()
 end_pb-start_pb
-
-gc()
 
 modeltime_table(wflw_fit_prophet_boost_tuned) %>% 
   modeltime_calibrate(new_data = testing(splits) %>% 
@@ -1023,6 +1071,10 @@ modeltime_table(wflw_fit_prophet_boost_tuned) %>%
                        filter(symbol == "LLY")
   ) %>% 
   plot_modeltime_forecast()
+
+calibrate_and_plot(wflw_fit_prophet_boost_tuned, print = F)
+
+gc()
 
 # * Prophet lg Boost TUNE SKIP ----
 
@@ -1092,8 +1144,8 @@ extract_fit_engine(wflw_fit_xgboost_tuned) %>%
 extract_fit_engine(wflw_fit_lgb_tuned) %>%
   # extract_fit_engine(wflw_fit_lightgbm) %>%
   lightgbm::lgb.importance(model = .) %>% 
-  as_tibble() %>% #View()
-  slice_max(Gain, n = 15) %>% 
+  as_tibble() %>% View()
+  slice_max(Gain, n = 20) %>% 
   mutate(Feature = as_factor(Feature) %>% fct_rev()) %>% 
   ggplot(aes(x = Gain, y = Feature, fill = Feature))+
   geom_col(alpha = 0.7)+
@@ -1110,6 +1162,27 @@ extract_fit_engine(wflw_fit_lgb_tuned) %>%
   mutate(rank = row_number()) %>% 
   filter(str_detect(Feature, "sin|cos"))
 
+# compare xgb and lgbm
+library(tidyt)
+bind_rows(extract_fit_engine(wflw_fit_xgboost_tuned) %>%
+              xgboost::xgb.importance(model = .) %>%
+              as_tibble() %>% 
+              mutate(model = "xgboost") %>% 
+              slice_max(Gain, n = 20),
+          extract_fit_engine(wflw_fit_lgb_tuned) %>%
+              # extract_fit_engine(wflw_fit_lightgbm) %>%
+              lightgbm::lgb.importance(model = .) %>% 
+              as_tibble()%>% 
+              mutate(model = "lightgbm") %>% 
+              slice_max(Gain, n = 20)) %>% 
+    ggplot(aes(x = Gain,
+               y = reorder_within(x = Feature, by = Gain, within = model))
+           )+
+    geom_col()+
+    facet_wrap(.~model)+
+    scale_y_reordered()
+          
+
 # scale_fill_viridis_d()# SHAP Analysis
 df_explain  <- bake( 
   prep(recipe_spec), 
@@ -1119,7 +1192,7 @@ df_explain  <- bake(
   ) %>% 
   select(-date)
 
-shap_values <- extract_fit_engine(wflw_fit_xgboost_tuned) %>% 
+shap_values <- extract_fit_engine(wflw_fit_lgb_tuned) %>% 
   shapviz(X_pred = data.matrix(df_explain), X = df_explain)
 
 # SHAP importance

@@ -26,7 +26,7 @@ library(doParallel)
 
 # Import data from forecast ----
 #change to the most recent forecast saved
-model_ensemble_final_forecast <- read_rds("04-Financial/04_01_save_data/2025-07-18_model_ensemble_final_forecast.rds")
+model_ensemble_final_forecast <- read_rds("01_save_data/2025-08-03_model_ensemble_final_forecast.rds")
 
 model_ensemble_final_forecast %>% 
   arrange(desc(date)) %>% 
@@ -34,18 +34,19 @@ model_ensemble_final_forecast %>%
 
 model_ensemble_final_forecast %>% 
   filter(date == max(date)) %>% 
-  slice_max(.value, n = 10) %>% 
+  slice_max(.value, n = 12) %>% 
   select(symbol, .value)
 
 # select the top n stocks
 stock_picks <- model_ensemble_final_forecast %>% 
   filter(date == max(date)) %>% 
+    filter(.value > 0) %>% 
   slice_max(.value, n = 10) %>% 
   pull(symbol) %>% 
   as.character()
 
 # IBrokers connection ----
-tws = twsConnect(port = 7497, clientId = 12) #paper trading port 7497; live 7496?
+tws = twsConnect(port = 7497, clientId = 11) #paper trading port 7497; live 7496
 isConnected(tws)
 
 # Portfolio query ----
@@ -65,7 +66,12 @@ port[,":=" (
 
 port
 
-port_value <- as.numeric(a[[1]][["CashBalance"]][["value"]])+sum(port$marketValue)#as.numeric(a[[1]][["GrossPositionValue"]][["value"]])
+holdings <- port$symbol
+
+# save portfolio snapshot
+write_rds(port, str_glue("01_save_data/{today()}_port.rds"))
+
+port_value <- as.numeric(a[[1]][["NetLiquidation"]][["value"]])#as.numeric(a[[1]][["CashBalance"]][["value"]])+sum(port$marketValue)#as.numeric(a[[1]][["GrossPositionValue"]][["value"]])
 
 # compare holdings to predicted values
 merge(port[,.(symbol, unrealizedPNL)],
@@ -80,6 +86,8 @@ get_market_prices <- function(symbols, tws) {
   prices <- list()  # Initialize an empty list
   
   for (symbol in symbols) {
+      
+      symbol <- gsub(symbol, pattern = "[-]", replacement = " ")
     # Request market data
     data <- reqHistoricalData(tws, twsSTK(symbol), barSize = "1 min", duration = "1 D")
     
@@ -187,11 +195,23 @@ order_function <- function(actions_table, tws) {
   }
 }
 
-# * submit orders ----
+# * submit orders THIS IS FOR REAL ----
 order_function(actions_table, tws)
 
 # write order history ----
-write_rds(actions_table, str_glue("04-Financial/04_01_save_data/{today()}_actions_table.rds"))
+write_rds(actions_table, str_glue("03_actions/{today()}_actions_table.rds"))
 
 # close the tws session ----
 twsDisconnect(tws)
+
+
+# test to find analyst ratings data ----
+
+# Define the contract for AAPL
+contract <- twsEquity("AAPL", "SMART", "USD")
+
+# Request market data with the 'analyst rating' generic tick
+# Generic tick ID for analyst ratings is "411" (subject to change)
+ratings <- reqMktData(tws, contract, genericTicks = "6", snapshot = FALSE)
+
+
