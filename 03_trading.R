@@ -26,7 +26,8 @@ library(doParallel)
 
 # Import data from forecast ----
 #change to the most recent forecast saved
-model_ensemble_final_forecast <- read_rds("01_save_data/2025-08-03_model_ensemble_final_forecast.rds")
+model_ensemble_final_forecast <- read_rds("01_save_data/01_saved_forecasts/2026-02-11_model_ensemble_final_forecast.rds")
+acc_by_symbol <- read_rds("02_models/2026-02-11_acc_by_symbol.rds")
 
 model_ensemble_final_forecast %>% 
   arrange(desc(date)) %>% 
@@ -34,19 +35,30 @@ model_ensemble_final_forecast %>%
 
 model_ensemble_final_forecast %>% 
   filter(date == max(date)) %>% 
+    merge(acc_by_symbol) %>% 
   slice_max(.value, n = 12) %>% 
-  select(symbol, .value)
+  select(symbol, .value, rmse, mae, rsq)
+
+model_ensemble_final_forecast %>% 
+    filter(date == max(date)) %>% 
+    slice_max(.value, n = 12) %>%
+    # filter(.value >= 0.01) %>% 
+    select(symbol, .value) %>% 
+    summarise(mean = mean(.value))
 
 # select the top n stocks
 stock_picks <- model_ensemble_final_forecast %>% 
-  filter(date == max(date)) %>% 
+    merge(acc_by_symbol) %>% 
+    select(symbol, date, .value, rmse, rsq) %>% 
+  filter(date == max(date)) %>%
+    filter(rmse < 0.07) %>% 
     filter(.value > 0) %>% 
   slice_max(.value, n = 10) %>% 
   pull(symbol) %>% 
   as.character()
 
 # IBrokers connection ----
-tws = twsConnect(port = 7497, clientId = 11) #paper trading port 7497; live 7496
+tws = twsConnect(port = 7496, clientId = 11) #paper trading port 7497; live 7496
 isConnected(tws)
 
 # Portfolio query ----
@@ -69,7 +81,7 @@ port
 holdings <- port$symbol
 
 # save portfolio snapshot
-write_rds(port, str_glue("01_save_data/{today()}_port.rds"))
+write_rds(port, str_glue("01_save_data/02_porfolios/{today()}_live_port.rds"))
 
 port_value <- as.numeric(a[[1]][["NetLiquidation"]][["value"]])#as.numeric(a[[1]][["CashBalance"]][["value"]])+sum(port$marketValue)#as.numeric(a[[1]][["GrossPositionValue"]][["value"]])
 
@@ -105,7 +117,6 @@ get_market_prices <- function(symbols, tws) {
 }
 
 # Apply function across stock symbols
-
 stock_prices_list <- future_lapply(stock_picks, get_market_prices, tws = tws)
 
 # Combine results into a single data.table
@@ -163,7 +174,7 @@ actions_table[,new_mkt_value := lastPrice*target_shares]
 setorder(actions_table, -action)
 
 actions_table
-actions_table[,.(sum(new_mkt_value, na.rm = T))]
+actions_table[,.(sum(marketValue, na.rm = T),sum(new_mkt_value, na.rm = T))]
 actions_table[action == "SELL",.(symbol,unrealizedPNL*(qty/position))]
 actions_table[action == "SELL",.(sum(unrealizedPNL*(qty/position)))]
 
@@ -199,7 +210,7 @@ order_function <- function(actions_table, tws) {
 order_function(actions_table, tws)
 
 # write order history ----
-write_rds(actions_table, str_glue("03_actions/{today()}_actions_table.rds"))
+write_rds(actions_table[, date := today()], str_glue("03_actions/{today()}_live_actions_table.rds"))
 
 # close the tws session ----
 twsDisconnect(tws)
