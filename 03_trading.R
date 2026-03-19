@@ -13,7 +13,7 @@
 # if target == 0 then action == "sell" and qty == transaction_shares
 # if shares_held > shares_order then action == "sell" and qty == transaction_shares
 
-# Install packages ----
+# Load packages ----
 #install.packages("IBrokers")
 library(IBrokers)
 library(tidyverse)
@@ -50,12 +50,12 @@ model_ensemble_final_forecast %>%
 stock_picks <- model_ensemble_final_forecast %>% 
     merge(acc_by_symbol) %>% 
     select(symbol, date, .value, rmse, rsq) %>% 
-  filter(date == max(date)) %>%
-    filter(rmse < 0.07) %>% 
+    filter(date == max(date)) %>%
+    filter(rmse < 0.05) %>% 
     filter(.value > 0) %>% 
-  slice_max(.value, n = 10) %>% 
-  pull(symbol) %>% 
-  as.character()
+    slice_max(.value, n = 12) %>% 
+    pull(symbol) %>% 
+    as.character()
 
 # IBrokers connection ----
 tws = twsConnect(port = 7496, clientId = 11) #paper trading port 7497; live 7496
@@ -81,11 +81,11 @@ port
 holdings <- port$symbol
 
 # save portfolio snapshot
-write_rds(port, str_glue("01_save_data/02_porfolios/{today()}_live_port.rds"))
+write_rds(port, str_glue("01_save_data/02_portfolios/{today()}_live_port.rds"))
 
 port_value <- as.numeric(a[[1]][["NetLiquidation"]][["value"]])#as.numeric(a[[1]][["CashBalance"]][["value"]])+sum(port$marketValue)#as.numeric(a[[1]][["GrossPositionValue"]][["value"]])
 
-# compare holdings to predicted values
+# compare holdings to predicted values to see what current holdings are expected to do
 merge(port[,.(symbol, unrealizedPNL)],
       model_ensemble_final_forecast %>% 
         filter(date == max(date)) %>% 
@@ -210,19 +210,17 @@ order_function <- function(actions_table, tws) {
 order_function(actions_table, tws)
 
 # write order history ----
-write_rds(actions_table[, date := today()], str_glue("03_actions/{today()}_live_actions_table.rds"))
+actions_table[, date := today()]
+
+write_rds(actions_table, str_glue("03_actions/{today()}_live_actions_table.rds"))
+
+actions_history_table <- readRDS("03_actions/actions_history_table.rds")
+
+actions_history_table <- rbind(actions_history_table, actions_table)
+
+write_rds(actions_history_table, str_glue("03_actions/actions_history_table.rds"))
+
+actions_history_table[,.(pl = sum(unrealizedPNL),value = sum(marketValue)),date][,.(pl, value, ROC(value,1))]
 
 # close the tws session ----
 twsDisconnect(tws)
-
-
-# test to find analyst ratings data ----
-
-# Define the contract for AAPL
-contract <- twsEquity("AAPL", "SMART", "USD")
-
-# Request market data with the 'analyst rating' generic tick
-# Generic tick ID for analyst ratings is "411" (subject to change)
-ratings <- reqMktData(tws, contract, genericTicks = "6", snapshot = FALSE)
-
-

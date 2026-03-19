@@ -9,7 +9,8 @@
 # nested forecasting: https://business-science.github.io/modeltime/articles/nested-forecasting.html
 # adam regression: https://business-science.github.io/modeltime/reference/adam_reg.html
 
-# packages ----
+# 0.0 Setup ----
+# * packages ----
 # Time Series ML
 library(tidymodels)
 library(modeltime)
@@ -49,11 +50,9 @@ library(TTR)
 library(xts)
 library(shapviz)
 
-# enter dates ----
-from <- today() - years(4)
-
-# not used
-# test_start <- today() - years(2)
+# * dates ----
+# set dates to allow enough time to generate all of the rolling metrics which may require more than 1 year of data
+from <- today() - years(4)# - months(1)
 
 # * Calibrate function ----
 calibrate_and_plot <- function(..., type = 'testing', plot = T){
@@ -80,13 +79,14 @@ calibrate_and_plot <- function(..., type = 'testing', plot = T){
     }
 }
 
-plot_fcst <- function(forecast){
+# * plot forecast function ----
+plot_fcst <- function(forecast, scales = "fixed", ncol = 3){
     g <- forecast %>% 
         group_by(symbol) %>% 
         ggplot(aes(x = date, y = .value, color = .model_desc))+
         geom_line()+
         geom_hline(yintercept = 0)+
-        facet_wrap(~symbol, ncol = 3)+
+        facet_wrap(~symbol, ncol = ncol, scales = scales)+
         scale_x_date(date_breaks = "6 months", date_labels =  "%m-%Y")+
         theme_bw()+
         theme(legend.position = "bottom",
@@ -98,6 +98,9 @@ plot_fcst <- function(forecast){
     
     ggplotly(g)
 }
+
+# * accuracy on testing ----
+
 
 # 1.0 Data ----
 # * symbols ----
@@ -130,9 +133,14 @@ sp400_symbols <- sp400 %>%
 # set.seed(27)
 # rand_symbols <- slice_sample(sp500,prop = 0.15) %>% filter(symbol != "-" & !str_detect(company,"CL C")) %>% pull(symbol)
 
-# test for 2 symbols with median rmse, two best, two worst
-# also select 2 highest and lowest weights of sp 500 and a few random
-symbols <- c("CNP","MPC","CMS","EXC","MU","STX","NVDA","AAPL","NWS","PSKY","KR","PFG","ACN","MMM","HST")
+# * symbols for testing ----
+symbols <- c("CNP","MPC","CMS","EXC","MU","STX", # # test for 2 symbols with median rmse, two best, two worst from february forecast
+             "NVDA","AAPL","NWS","PSKY", # 2 highest and lowest weights of sp 500
+             "KR","PFG","ACN","MMM","HST","FAST","GM", # some randoms
+             "LITE", "COHR", "FTI", # top 3 weights from SP400
+             "SW"
+             ) # sw has a lot of 0 and should get filtered out
+
 # symbols_all <- union(rand_symbols, symbols)
 
 # ** symbols by exchange ----
@@ -154,8 +162,9 @@ symbols <- exchanges %>%
 symbols %>% filter(symbol %notin% sp500$symbol) %>% View()
 
 # * get stock price data ----
-prices_base <- tq_get(symbols, from = from) %>% 
-    setDT()
+prices_base <- tq_get(symbols, from = from) 
+
+setDT(prices_base)
 
 # ** view data ----
 prices_base
@@ -172,9 +181,12 @@ symbols_filtered_list <- prices_base[!is.na(close),
                                        min = min(date)),
                                      keyby = symbol][count >= 252*3 & max == max(max),
                                                      symbol]
+
 symbols_filtered_list <- symbols_filtered_list[!symbols_filtered_list %in%
                            prices_base[date == max(date),.(symbol,close)][close <= 10,symbol]]
 
+symbols_filtered_list <- symbols_filtered_list[!symbols_filtered_list %in%
+                                                   prices_base[volume == 0,.N, keyby = symbol][N > 1,symbol]]
 
 
 # * create filtered dataset ----
@@ -191,8 +203,10 @@ add_features <- function(prices_dt, price) {
   # Calculate Indicators
   prices_dt[, Close_macd_long := MACD(price_col, 50, 200, 30)[, "macd"]]
   prices_dt[, Close_macd_long_signal := MACD(price_col, 50, 200, 30)[, "signal"]]
-  prices_dt[, Close_macd_short := MACD(price_col, 12, 26, 9, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "macd"]]
-  prices_dt[, Close_macd_short_signal := MACD(price_col, 12, 26, 9, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "signal"]]
+  prices_dt[, Close_macd_short := MACD(price_col, 18, 26, 18, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "macd"]]
+  prices_dt[, Close_macd_short_signal := MACD(price_col, 18, 26, 18, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "signal"]]
+  # prices_dt[, Close_macd_short := MACD(price_col, 12, 26, 9, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "macd"]]
+  # prices_dt[, Close_macd_short_signal := MACD(price_col, 12, 26, 9, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "signal"]]
   prices_dt[, ":=" (
       Close_macd_long_trend = frollmean(Close_macd_long,21),
       Close_macd_long_signal_trend = frollmean(Close_macd_long_signal,21),
@@ -204,22 +218,22 @@ add_features <- function(prices_dt, price) {
   prices_dt[, Close_ema_10_norm  := EMA(price_col, n = 10) / price_col]
   prices_dt[, Close_ema_21_norm  := EMA(price_col, n = 21) / price_col]
   prices_dt[, Close_ppo_line_12_26 := ((EMA(price_col, 12) - EMA(price_col, 26)) / EMA(price_col, 26)) * 100]
-  prices_dt[, Close_oscillator_7_14_28 := ultimateOscillator(prices_dt[, .(high, low, price_col)])]
+  # prices_dt[, Close_oscillator_7_14_28 := ultimateOscillator(prices_dt[, .(high, low, price_col)])]
   prices_dt[, Close_roc_0_1      := ROC(price_col, n = 1)]
   #prices_dt[, Close_roc_0_1_roll := frollmean(Close_roc_0_1, n=21, align = "right", na.rm = T)]
-  prices_dt[, Close_roc_0_5      := ROC(price_col, n = 5)]
+  # prices_dt[, Close_roc_0_5      := ROC(price_col, n = 5)]
   prices_dt[, Close_roc_0_21     := ROC(price_col, n = 21)]
-  prices_dt[, Close_roc_0_1_rolling_std_63 := frollsd(Close_roc_0_1, 63, fill = NA, align = "right")]
-  prices_dt[, Close_natr_63      := ATR(prices_dt[,.(high, low, price_col)], n = 63)[,"atr"]/eval(quote(get(price)))]
+  prices_dt[, Close_roc_0_1_rolling_std_win_63 := frollsd(Close_roc_0_1, 63, fill = NA, align = "right")]
+  prices_dt[, Close_natr_63      := ATR(prices_dt[,.(high, low, price_col)], n = 63)[,"atr"]/price_col]
   # prices_dt[, Close_rsi_10       := RSI(price_col, n = 10)]
-  prices_dt[, Close_rsi_28       := RSI(price_col, n = 28)]
+  prices_dt[, Close_rsi_21       := RSI(price_col, n = 21)]
   prices_dt[, Close_cmo_28       := CMO(price_col, n = 28)]
   prices_dt[, Close_cmo_ma       := EMA(Close_cmo_28, n = 21)]
   prices_dt[, Close_cmo_signal   := Close_cmo_28/Close_cmo_ma]
-  prices_dt[, Close_rolling_mean_126_norm := frollmean(price_col, 126) / price_col] #used to be standardize vec
-  prices_dt[, Close_rolling_std_126 := frollsd(price_col, 126, sd)]
+  # prices_dt[, Close_rolling_126_norm := (price_col - frollmean(price_col, 126)) / frollsd(price_col, 126, align = "right")] #used to be standardize vec
+  # prices_dt[, Close_rolling_std_126 := frollsd(price_col, 126, align = "right")]
   
-  prices_dt[, Close_SNR_21       := SNR(prices_dt[, .(high, low, price_col)], n = 21)]
+  # prices_dt[, Close_SNR_21       := SNR(prices_dt[, .(high, low, price_col)], n = 21)]
   prices_dt[, Close_rel_vol_14   := 100 - 100 / (1 + runSD(price_col, 14))]
   prices_dt[, Close_252_max_diff := price_col/frollmax(price_col, 252, align = 'right')]
   prices_dt[, Close_252_min_diff := price_col/frollmin(price_col, 252, align = 'right')]
@@ -230,7 +244,7 @@ add_features <- function(prices_dt, price) {
   prices_dt[, Close_TRIX         := TRIX(price_col, n = 20, nSig = 9, "EMA", percent = TRUE)[,"TRIX"]]
   prices_dt[, Close_TRIX_signal  := TRIX(price_col, n = 20, nSig = 9, "EMA", percent = TRUE)[,"signal"]]
   prices_dt[, SAR                := SAR(prices_dt[, .(high, low)])]
-  prices_dt[, SMI                := SMI(prices_dt[, .(high, low, price_col)])[,"SMI"]]
+  # prices_dt[, SMI                := SMI(prices_dt[, .(high, low, price_col)])[,"SMI"]]
   prices_dt[, SMI_signal         := SMI(prices_dt[, .(high, low, price_col)])[,"signal"]]
   prices_dt[, CMF                := CMF(prices_dt[, .(high, low, price_col)], volume)]
   prices_dt[, EMV                := EMV(prices_dt[, .(high, low)], volume)[,"emv"]]
@@ -246,8 +260,9 @@ add_features <- function(prices_dt, price) {
   prices_dt[,":=" (numSMA = NULL, denSMA = NULL)]
   
   # create indicators for intraday effects and day return
-  # turn these off since they are low importance
-  # prices_dt[, ":=" (intraday = high/low-1, day_return = open/close-1)]
+  # remove intraday are low importance intraday = high/low-1,
+  prices_dt[, ":=" (HLC_ratio = (high-low)/close,
+                    OC_ratio  = (open-close)/close)]
   
   # Volume-based indicators
   # prices_dt[, Vol_ema_21_norm  := EMA(volume, n = 21) / volume]
@@ -255,20 +270,20 @@ add_features <- function(prices_dt, price) {
   
   # create indicators based on VWAP
   prices_dt[, Vol_WAP           := VWAP(price_col, volume)] # only used for ratios, then dropped
-  # prices_dt[, Vol_WAP_norm      := standardize_vec(Vol_WAP)]
+  prices_dt[, Vol_WAP_log       := log(Vol_WAP)]
   prices_dt[, Vol_WAP_Close     := Vol_WAP/price_col]
-  prices_dt[, Vol_WAP_EMA       := EMA(Vol_WAP, n = 21)] # only used for ratios, then dropped
+  # prices_dt[, Vol_WAP_EMA       := EMA(Vol_WAP, n = 21)] # only used for ratios, then dropped
   # prices_dt[, Vol_WAP_EMA_norm  := standardize_vec(EMA(Vol_WAP, n = 21))]
-  prices_dt[, Vol_WAP_EMA_ratio := Vol_WAP/Vol_WAP_EMA]
+  # prices_dt[, Vol_WAP_EMA_ratio := Vol_WAP/Vol_WAP_EMA]
   prices_dt[, Vol_WAP_ROC       := ROC(Vol_WAP, n = 21)]
-  prices_dt[, Vol_roc_0_1_rolling_std_63 := frollsd(Vol_roc_0_1, 63, fill = NA, align = "right")]
+  prices_dt[, Vol_roc_0_1_rolling_std_63 := frollsd(Vol_roc_0_1, 63, align = "right")]
   
   # standardize VWAP by 252 days
   prices_dt[, Vol_WAP_norm      := (Vol_WAP - frollmean(Vol_WAP, n = 252, align = "right"))/frollsd(Vol_WAP, n = 252, align = "right")]
   # prices_dt[, Vol_WAP_roll_ratio := Vol_WAP/Vol_WAP_norm_roll]
   
-  prices_dt[, ':=' (Vol_WAP = NULL, 
-                    Vol_WAP_EMA = NULL
+  prices_dt[, ':=' (Vol_WAP = NULL 
+                    #,Vol_WAP_EMA = NULL
                     )]
   
   #prices_dt[, Vol_OBV_standard := standardize_vec(OBV(price_col, volume))]
@@ -285,10 +300,10 @@ add_features <- function(prices_dt, price) {
     Close_lag_252 = data.table::shift(price_col, n = 252)
   )]
   
-  prices_dt[, Close_momentum_21_252_126 := ((Close_lag_21 / Close_lag_252 - 1) - (Close_lag_1 / Close_lag_21 - 1))/frollsd(Close_roc_0_1, 126, fill = NA, align = "right")]
+  prices_dt[, Close_momentum_21_252_126 := ((Close_lag_21 / Close_lag_252 - 1) - (Close_lag_1 / Close_lag_21 - 1))/frollsd(Close_roc_0_1, 126, align = "right")]
 
   # Z-score features
-  prices_dt[, Close_zscore_126 := (price_col - frollmean(close, 126, align = "right")) / Close_rolling_std_126]
+  prices_dt[, Close_zscore_126 := (price_col - frollmean(price_col, 126, align = "right")) / frollsd(price_col, 126, align = "right")]
   
   prices_dt[, ":=" (Close_roc_0_1 = NULL, 
                     Vol_roc_0_1   = NULL)]
@@ -354,6 +369,26 @@ prices_features_dt %>%
   theme(axis.text.x = element_text(angle = 30, hjust = 1),
         strip.background = element_rect("#0076BA"),
         strip.text = element_text(color = "white"))
+
+prices_features_dt %>% 
+    #filter(symbol %in% symbols_filtered_list[c(7:17)]) %>% droplevels() %>% 
+    select(symbol, contains("macd")) %>% 
+    pivot_longer(-symbol) %>% 
+    filter(!is.na(value)) %>% 
+    ggplot(aes(y = value, x = symbol, fill = symbol, color = symbol))+
+    geom_boxplot(alpha = 0.7, show.legend = F)+
+    facet_wrap(~name, scales = "free_y")+
+    theme_clean()+
+    theme(axis.text.x = element_text(angle = 30, hjust = 1),
+          strip.background = element_rect("#0076BA"),
+          strip.text = element_text(color = "white"))
+
+
+prices_features_dt %>% 
+    #filter(symbol %in% symbols_filtered_list[c(7:17)]) %>% droplevels() %>% 
+    select(symbol, contains("macd"), Return_fwd_21) %>% 
+    cor_test(Return_fwd_21) %>% 
+    arrange(desc(cor))
 
 prices_features_dt %>% 
     filter(symbol %in% symbols[c(7:25)]) %>% droplevels() %>% 
@@ -602,6 +637,65 @@ summary(prices_earnings_tbl)
 # SP500 prices ----
 sp_dt <- tq_get("^SPX", from = from) %>% 
     setDT()
+# Commodities ----
+commodities <- c(
+    "CL=F" # crude oil futures
+    #,"GC=F" #gold futures
+)
+commodity_prices <- tq_get(commodities, from = from-30)
+
+setDT(commodity_prices)
+setorderv(commodity_prices, c("symbol","date"))
+setnafill(commodity_prices, type = "locf", cols = colnames(commodity_prices[,.SD,.SDcols = sapply(commodity_prices, is.numeric)]))
+
+commodity_prices[, symbol := str_replace_all(symbol,
+                                        c("CL=F" = "crude",
+                                          "GC=F" = "gold"))]
+
+commodity_prices[,":=" (close_roc_5 = close/data.table::shift(close, 5)-1,
+                        close_roc_21 = close/data.table::shift(close, 21)-1,
+                        close_max = close/frollmax(close, 252, align = "right"),
+                        close_min = close/frollmin(close, 252, align = "right"),
+                        close_norm = (close - frollmean(close, 252))/frollsd(close,252)),
+                 keyby = .(symbol)]
+
+commodity_prices[, ":=" (
+    close_macd = EMA(close, 12) - EMA(close, 26)
+    ), 
+    keyby = symbol][,":=" (close_macd_signal = EMA(close_macd, 9)), 
+                    keyby = symbol]
+
+cast_cols <- colnames(commodity_prices[,.SD, .SDcols = patterns("close")])
+
+commodity_prices_cast <- commodity_prices[,dcast.data.table(.SD, date ~ symbol, value.var = cast_cols)]
+
+commodity_prices_short <- commodity_prices[,!c("open","high","low","adjusted","volume","symbol")]
+names = names(commodity_prices_short)
+names = names[names != "date"]
+
+setnames(commodity_prices_short, old = names, new = paste0(names, "_oil"))
+
+# * merge to prices data ----
+prices_comm_tbl <- merge(prices_earnings_tbl, 
+                         commodity_prices_cast, 
+                         all.x = T,
+                         by = "date")
+
+prices_comm_dt <- merge(prices_features_dt, 
+                         commodity_prices_short, 
+                         all.x = T,
+                         by = "date")
+
+setnames(commodity_prices, "close","close_oil")
+
+# test with just the closing price of oil
+prices_comm_dt <- merge(prices_features_dt, 
+                        commodity_prices[,.(date, close_oil)], 
+                        all.x = T,
+                        by = "date")
+
+prices_comm_dt[,":=" (Close_ratio_oil = close/close_oil)]
+
 
 # Hidden Markov model ----
 # * function ----
@@ -675,6 +769,7 @@ indicators <- c("GDPC1", # real gdp
                 "UMCSENT", # u michigan consumer sentiment
                 #"DFF", # fed funds daily effective rate
                 "M2SL" # M2 money supply for divergence
+                # ,"DCOILBRENTEU" # Brent oil daily Europe
                 # ,"BBKMGDP"
 )
 
@@ -740,7 +835,7 @@ economic_data_final <- economic_data_pad[,.(date,
 #economic_data_final[,unrate_over := fifelse(value_UNRATE > frollmean(value_UNRATE, n = 300),1,0)]
 
 # * join economic data to prices ----
-prices_earnings_econ_tbl <- merge(prices_earnings_tbl, 
+prices_earnings_econ_tbl <- merge(prices_comm_tbl, 
                                   economic_data_final, 
                                   all.x = T,
                                   by = "date")
@@ -947,6 +1042,17 @@ full_data %>%
           colors = c("darkred","white","darkgreen"))
 
 full_data %>% 
+    select(contains("gold"),contains("crude"), Return_fwd_21) %>% 
+    drop_na() %>% 
+    slice_sample(prop = 0.5) %>% 
+    cor_test() %>% #filter(var1 == "Return_fwd_21" & var1 != var2) %>% arrange(desc(abs(cor)))
+    plot_ly(x = ~var1,
+            y = ~var2,
+            z = ~cor,
+            type = "heatmap",
+            colors = c("darkred","white","darkgreen"))
+
+full_data %>% 
   select(starts_with("date_"), starts_with("spy"), Return_fwd_21) %>% 
   drop_na() %>% 
   mutate(spy_state = as.numeric(spy_state)) %>% 
@@ -1001,17 +1107,38 @@ gc()
 
 # 2.0 TIME TEST/TRAIN SPLIT ----
 
-# * Split into train and forecast sets ----
-# data prepared_tbl removes the lines missing data due to the rolling periods
+# * prepare for splitting ----
+# removes the lines missing data due to the rolling periods
 data_prepared_tbl <- full_data %>% 
   filter(!is.na(Return_fwd_21)) # %>% # test moving this filter to the full data to reduce the full data
     # filter(!is.na(Close_momentum_21_252_126))
+
+setorderv(prices_features_dt, c("symbol","date"))
+
+data_prepared_dt_short <- setDT(prices_features_dt[!is.na(Close_momentum_21_252_126) &
+                                                       !is.na(Vol_WAP_norm),
+                                               select(.SD,
+                                                      -(open:adjusted),
+                                                      #-Return_fwd_5, -Return_fwd_10,
+                                                      -contains("_lag_"),
+                                                      -contains("_lead_"))] %>% 
+                                    tk_augment_fourier(date, .periods = c(63,252), .K = 1))
+
+#prices_features_dt[,.(Return_fwd_21, shift(Return_fwd_21,1))] %>% cor_test()
+# data_prepared_dt_short[,Return_fwd_21_shift_21 := shift(Return_fwd_21,21), keyby = symbol]
+
+data_prepared_dt_short[,rowid := 1:.N]
+
+setcolorder(data_prepared_dt_short, "rowid", before = "symbol")
     
-forecast_tbl <- full_data %>% 
-  filter(is.na(Return_fwd_21))
+forecast_tbl <- full_data %>% filter(is.na(Return_fwd_21))
+
+
+forecast_dt <- data_prepared_dt_short[is.na(Return_fwd_21),]
 
 # setnafill(data_prepared_tbl, type = "const", fill = 0, cols = "eps_surprise_norm")
-    
+
+# * split ----
 splits <- data_prepared_tbl %>% 
     time_series_split(
     date_var = date,
@@ -1019,6 +1146,19 @@ splits <- data_prepared_tbl %>%
     assess  = "45 days",
     cumulative = F
     )
+
+splits <- data_prepared_dt_short[!is.na(Return_fwd_21) 
+                                 #& !is.na(Return_fwd_21_shift_21)
+                                 ] %>% 
+    time_series_split(
+        date_var = date,
+        initial = 252*2,
+        assess  = 21,
+        cumulative = F
+    )
+
+set.seed(123)
+train_short <- training(splits) %>% slice_sample(prop = 0.5, by = symbol)
 
 # ** plot time plan ----
 splits %>% 
@@ -1069,12 +1209,12 @@ recipe_spec <- recipe(Return_fwd_21 ~ ., data = training(splits)) %>%
     # step_mutate(spy_state = as.factor(spy_state)) %>% 
     # step_interact(~Close_macd_long:Close_macd_short) %>% 
     step_interact(~Close_macd_long_signal:Close_macd_short_signal) %>% 
-    # step_interact(~div_roc:div_ann_days) %>%
+    #step_interact(~div_roc:div_ann_days) %>%
     step_interact(~eps_growth_norm:eps_ann_days) %>%
     step_interact(~eps_surprise_norm:eps_ann_days) %>%
-    # step_interact(~value_FEDFUNDS:econ_ann_days) %>%
+    #step_interact(~value_FEDFUNDS:econ_ann_days) %>%
     #step_interact(~value_UNRATE:econ_ann_days) %>%
-    # step_interact(~change_CPILFESL:econ_ann_days) %>%
+    #step_interact(~change_CPILFESL:econ_ann_days) %>%
     step_interact(~change_GDPC1:econ_ann_days) %>% 
     step_rm(econ_ann_days, change_GDPC1) %>% 
     step_filter_missing(all_predictors(), threshold = 0.2) %>% 
@@ -1083,7 +1223,29 @@ recipe_spec <- recipe(Return_fwd_21 ~ ., data = training(splits)) %>%
     # step_corr(all_numeric_predictors(), threshold = 0.95) %>% 
     # step_pca(all_numeric_predictors())
 
+# ** short data recipe spec ----
+recipe_spec_short <- recipe(Return_fwd_21 ~ ., data = training(splits)) %>%
+    update_role(rowid, new_role = 'identifier') %>% 
+    # update_role(symbol, new_role = 'symbol') %>%
+    # step_mutate_at(symbol, fn = droplevels) %>%
+    # step_timeseries_signature(date) %>%
+    # step_rm(matches("(.xts$)|(.iso$)|(.hour)|(.minute)|(.second)|(.am.pm)")) %>%
+    # step_rm(date_index.num, date_year) %>%
+    # step_normalize(date_index.num, ends_with("_year")) %>%  
+    # step_normalize(index.num,year) %>% 
+    step_rm(Return_fwd_5, Return_fwd_10) %>%
+    step_rm(Close_TRIX,Close_ADX_DX,EMV,rvi) %>% 
+    step_dummy(all_nominal_predictors(), one_hot = T, keep_original_cols = F) %>%
+    step_interact(~Close_macd_long:Close_macd_short) %>% 
+    step_interact(~Close_macd_long_signal:Close_macd_short_signal) %>% 
+    step_filter_missing(all_predictors(), threshold = 0.2) %>% 
+    step_zv(all_predictors()) #%>% 
+    # step_nzv(all_predictors(), unique_cut = 0.02) #%>% 
+# step_corr(all_numeric_predictors(), threshold = 0.95) %>% 
+# step_pca(all_numeric_predictors())
+
 # recipe_spec %>% prep() %>% bake(new_data = training(splits) %>% slice_sample(prop = 0.3)) %>% glimpse()
+recipe_spec_short %>% prep() %>% juice() %>% glimpse()
 
 # cols <- recipe_spec %>% prep() %>% juice() %>% colnames()
 # cols_cor <- recipe_spec %>% step_corr(all_numeric_predictors(), threshold = 0.95) %>% prep() %>% juice() %>% colnames()
@@ -1094,7 +1256,8 @@ recipe_spec <- recipe(Return_fwd_21 ~ ., data = training(splits)) %>%
 
 # * RESAMPLES - K-FOLD ----- 
 set.seed(69)
-resamples_kfold <- training(splits) %>% vfold_cv(v = 6, strata = symbol)
+resamples_kfold <- training(splits) %>% vfold_cv(v = 5)
+resamples_kfold_short <- train_short %>% vfold_cv(v = 5)
 
 # * plot resampling folds ----
 resamples_kfold %>% 
@@ -1107,7 +1270,7 @@ resamples_kfold %>%
 
 options(future.globals.maxSize = 2.0 * 1024^3)  # Set to 2.0 GiB
 
-parallel_start(1:4, .method = "future")
+parallel_start(1:6, .method = "future")
 
 parallel_stop()
 
@@ -1131,7 +1294,7 @@ model_spec_lgb_tune <- boost_tree(
 wflw_spec_lgb_tune <- workflow() %>% 
     add_model(model_spec_lgb_tune) %>% 
     # add_recipe(recipe_spec %>% step_rm(contains("date")))
-    add_recipe(recipe_spec %>% step_rm(date))
+    add_recipe(recipe_spec_short %>% step_rm(date))
 
 # ** Tuning
 set.seed(69)
@@ -1139,13 +1302,14 @@ start_l <- Sys.time()
 tune_results_lgb <- wflw_spec_lgb_tune %>% 
   tune_race_anova(
     resamples = resamples_kfold,
+    # resamples = resamples_kfold_short,
     param_info = extract_parameter_set_dials(wflw_spec_lgb_tune) %>% 
       update(learn_rate = learn_rate(range = c(0.05, 0.5), trans = NULL),
-             trees      = trees(range = c(200,4000)),
-             mtry       = mtry_prop(range = c(0.1,0.8))
+             trees      = trees(range = c(200, 3500)),
+             mtry       = mtry_prop(range = c(0.05,0.8))
       ),
     grid = 10,
-    control = control_race(verbose = F, allow_par = T) #, parallel_over = NULL
+    control = control_race(verbose = T, parallel_over = NULL)
   )
 end_l <- Sys.time()
 end_l-start_l
@@ -1160,23 +1324,19 @@ tune_results_lgb %>% collect_metrics()
 
 # ** Finalize
 
+tic()
 wflw_fit_lgb_tuned <- wflw_spec_lgb_tune %>% 
   finalize_workflow(select_best(tune_results_lgb, metric = "rmse")) %>% 
-  fit(training(splits))
+  #fit(training(splits))
+    fit(train_short)
+toc()
 
 # ** test accuracy ----
-augment(wflw_fit_lgb_tuned,training(splits)) %>% 
-    mutate(error = .pred-Return_fwd_21) %>% 
-    summarise(rmse = sqrt(mean(error^2)))
-
-augment(wflw_fit_lgb_tuned,training(splits)) %>% 
-    rsq(.pred, Return_fwd_21)
-
 augment(wflw_fit_lgb_tuned,testing(splits)) %>% 
     mutate(error = .pred-Return_fwd_21) %>% 
     summarise(rmse = sqrt(mean(error^2)))
 
-augment(wflw_fit_lgb_tuned,testing(splits)) %>% 
+augment(wflw_fit_lgb_tuned,testing(splits)) %>% #_short
     rsq(.pred, Return_fwd_21)
 
 calibrate_and_plot(wflw_fit_lgb_tuned, plot = F)
@@ -1186,27 +1346,32 @@ testing_symbol <- 'AAPL'
 fcst_test_fit_lgb_tuned <- modeltime_table(wflw_fit_lgb_tuned) %>% 
     modeltime_calibrate(new_data = testing(splits),
                         id = "symbol") %>% 
-    modeltime_forecast(actual_data = data_prepared_tbl, 
+    modeltime_forecast(actual_data = data_prepared_dt_short[!is.na(Return_fwd_21),], 
                        new_data = testing(splits),
                        keep_data  = T, # keeps the grouping variable and base data
                        conf_by_id = T)
 
-fcst_test_fit_lgb_tuned %>%
+lgboost_winrate <- fcst_test_fit_lgb_tuned %>%
     filter(!is.na(.model_id)) %>% 
+    # filter(date == max(date)) %>%
     select(.index, symbol, .value, Return_fwd_21) %>% 
     rename(prediction = .value, actual = Return_fwd_21) %>% 
     #filter(.index == "2025-09-17") %>% 
     # pivot_wider(names_from = .key, values_from = .value) %>% 
     # filter(!is.na(prediction)) %>% 
-    mutate(direction = if_else((actual >= 0 & prediction >= 0)|
+    mutate(win = if_else((actual >= 0 & prediction >= 0)|
                                    (actual < 0 & prediction < 0),
                                1, 0)) %>% 
     group_by(symbol) %>% 
-    summarise(sum = sum(direction), mean = mean(direction), n = n()) %>% 
-    ungroup()
+    summarise(wins = sum(win), rate = mean(win), n = n()) %>% 
+    ungroup() %>% 
+    mutate(model = 'lgb') %>% 
+    setDT()
+
+lgboost_winrate[,.(total_wins = sum(wins), winrate = sum(wins)/sum(n))]
 
 fcst_test_fit_lgb_tuned %>% 
-    filter(symbol == "MMM") %>% 
+    filter(symbol == "AAPL") %>% 
   plot_modeltime_forecast(.conf_interval_show = F)
 
 fcst_test_fit_lgb_tuned %>% 
@@ -1247,9 +1412,7 @@ model_spec_xgboost_tune <- boost_tree(
 
 wflw_spec_xgboost_tune <- workflow() %>% 
     add_model(model_spec_xgboost_tune) %>%
-    # add_recipe(recipe_spec %>% step_rm(contains("date")))
-    add_recipe(recipe_spec %>% step_rm(date))
-    # add_recipe(recipe_spec %>% step_rm(date) %>% step_rm(Close_ppo_line_12_26,SMI,change_sp500, Close_SNR_21,intraday))
+    add_recipe(recipe_spec_short %>% step_rm(date))
 
 # ** Tuning
 
@@ -1257,11 +1420,12 @@ set.seed(69)
 start_x <- Sys.time()
 tune_results_xgboost <- wflw_spec_xgboost_tune %>% 
     tune_race_anova(
-        resamples = resamples_kfold,
+        # resamples = resamples_kfold,
+        resamples = resamples_kfold_short,
         param_info = extract_parameter_set_dials(wflw_spec_xgboost_tune) %>% 
           update(learn_rate = learn_rate(range = c(0.05, 0.5), trans = NULL),
-                 trees      = trees(range = c(200,4000)),
-                 mtry       = mtry_prop(range = c(0.1,0.8))
+                 trees      = trees(range = c(200,3500)),
+                 mtry       = mtry_prop(range = c(0.05,0.8))
                  ),
         grid = 10,
         control = control_race(verbose = F, parallel_over = NULL)
@@ -1286,6 +1450,7 @@ start <- Sys.time()
 wflw_fit_xgboost_tuned <- wflw_spec_xgboost_tune %>% 
     finalize_workflow(select_best(tune_results_xgboost, metric = "rmse")) %>% 
     fit(training(splits))
+    # fit(train_short)
 end <- Sys.time() 
 end-start
 
@@ -1301,7 +1466,7 @@ augment(wflw_fit_xgboost_tuned,testing(splits)) %>%
 
 fcst_test_fit_xgboost_tuned <- modeltime_table(wflw_fit_xgboost_tuned) %>% 
   modeltime_calibrate(new_data = testing(splits), id = "symbol") %>% 
-  modeltime_forecast(actual_data = data_prepared_tbl, 
+  modeltime_forecast(actual_data = data_prepared_dt_short[!is.na(Return_fwd_21),], 
                      new_data = testing(splits),
                         keep_data = T, conf_by_id = T) 
 
@@ -1309,24 +1474,32 @@ fcst_test_fit_xgboost_tuned <- modeltime_table(wflw_fit_xgboost_tuned) %>%
 #     group_by(symbol) %>% 
 #   plot_modeltime_forecast(.conf_interval_show = F, .facet_vars = symbol, .interactive = F, .facet_ncol = 2)
 
-fcst_test_fit_xgboost_tuned %>%
+xgboost_winrate <- fcst_test_fit_xgboost_tuned %>%
     filter(!is.na(.model_id)) %>% 
+    # filter(date == max(date)) %>% 
     select(.index, symbol, .value, Return_fwd_21) %>% 
     rename(prediction = .value, actual = Return_fwd_21) %>% 
     #filter(.index == "2025-09-17") %>% 
     # pivot_wider(names_from = .key, values_from = .value) %>% 
     # filter(!is.na(prediction)) %>% 
-    mutate(direction = if_else((actual >= 0 & prediction >= 0)|
+    mutate(win = if_else((actual >= 0 & prediction >= 0)|
                                    (actual < 0 & prediction < 0),
                                1, 0)) %>% 
     group_by(symbol) %>% 
-    summarise(sum = sum(direction), mean = mean(direction), n = n())
+    summarise(wins = sum(win), rate = mean(win), n = n()) %>% 
+    ungroup() %>% 
+    mutate(model = 'xgboost') %>% setDT()
+
+xgboost_winrate[,.(total_wins = sum(wins), winrate = sum(wins)/sum(n))]
 
 fcst_test_fit_xgboost_tuned %>% 
     filter(symbol == "AAPL") %>% 
     plot_modeltime_forecast(.conf_interval_show = F)
 
 fcst_test_fit_xgboost_tuned %>% plot_fcst()
+
+merge(lgboost_winrate, xgboost_winrate, by = "symbol")
+#merge(xgboost_winrate, xgboost_winrate_long, by = "symbol")
 
 # ** save tune results ----
 write_rds(tune_results_xgboost, "02_models/tune_results_xgboost.rds", compress = "gz")
@@ -1360,16 +1533,8 @@ model_spec_prophet_boost_tune <- prophet_boost(
 
 wflw_spec_prophet_boost_tune <- workflow() %>% 
     add_model(model_spec_prophet_boost_tune) %>% 
-    add_recipe(recipe_spec)
-    # add_recipe(recipe_spec %>% step_rm(Close_roc_0_21, Close_ADX_DX, intraday, 	
-    #                    Close_ppo_line_12_26, 	
-    #                    change_UNRATE, 
-    #                    Close_oscillator_7_14_28,
-    #                    day_return,
-    #                    Close_rsi_10,
-    #                    value_FEDFUNDS,
-    #                    div_roc))
-
+    add_recipe(recipe_spec_short)
+    # add_recipe(recipe_spec)
 
 # ** Tuning
 
@@ -1378,12 +1543,13 @@ start_p <- Sys.time()
 tune_results_prophet_boost <- wflw_spec_prophet_boost_tune %>% 
     tune_race_anova(
         resamples = resamples_kfold,
+        # resamples = resamples_kfold_short,
         param_info = extract_parameter_set_dials(wflw_spec_prophet_boost_tune) %>% 
             update(learn_rate = learn_rate(range = c(0.1, 0.4), trans = NULL),
                    #trees      = trees(range = c(50,1000)),
                    mtry       = mtry_prop(range = c(0.1,0.8))
             ),
-        grid = 5,
+        grid = 6,
         control = control_race(verbose_elim = T, parallel_over = NULL)
     )
 end_p <- Sys.time() 
@@ -1404,10 +1570,11 @@ start <- Sys.time()
 wflw_fit_prophet_boost_tuned <- wflw_spec_prophet_boost_tune %>% 
     finalize_workflow(select_best(tune_results_prophet_boost, metric = "rmse")) %>% 
     fit(training(splits))
+    # fit(training(splits_short))
 end <- Sys.time()
 end - start
 
-# view results 
+# ** Prophet boost test accuracy ----
 augment(wflw_fit_prophet_boost_tuned,testing(splits)) %>% 
     mutate(error = .pred-Return_fwd_21) %>% 
     summarise(rmse = sqrt(mean(error^2)))
@@ -1420,28 +1587,37 @@ calibrate_and_plot(wflw_fit_prophet_boost_tuned, plot = F)
 
 fcst_test_fit_prophet_boost_tuned <- modeltime_table(wflw_fit_prophet_boost_tuned) %>% 
     modeltime_calibrate(new_data = testing(splits), id = "symbol") %>% 
-    modeltime_forecast(actual_data = data_prepared_tbl, 
+    modeltime_forecast(actual_data = data_prepared_dt_short[!is.na(Return_fwd_21)], 
                        new_data = testing(splits),
                        keep_data = T, conf_by_id = T) 
 
 fcst_test_fit_prophet_boost_tuned %>% 
-    group_by(symbol) %>% 
-    plot_modeltime_forecast(.facet_vars = symbol, .facet_ncol = 4)
+    filter(symbol == "AAPL") %>% 
+    plot_modeltime_forecast(.conf_interval_show = F)
 
-fcst_test_fit_prophet_boost_tuned %>%
+# fcst_test_fit_prophet_boost_tuned %>% 
+#     group_by(symbol) %>% 
+#     plot_modeltime_forecast(.facet_vars = symbol, .facet_ncol = 4, .facet_scales = "fixed")
+
+prophet_winrate <- fcst_test_fit_prophet_boost_tuned %>%
     filter(!is.na(.model_id)) %>% 
     select(.index, symbol, .value, Return_fwd_21) %>% 
     rename(prediction = .value, actual = Return_fwd_21) %>% 
     #filter(.index == "2025-09-17") %>% 
     # pivot_wider(names_from = .key, values_from = .value) %>% 
     # filter(!is.na(prediction)) %>% 
-    mutate(direction = if_else((actual >= 0 & prediction >= 0)|
+    mutate(win = if_else((actual >= 0 & prediction >= 0)|
                                    (actual < 0 & prediction < 0),
                                1, 0)) %>% 
     group_by(symbol) %>% 
-    summarise(sum = sum(direction), mean = mean(direction), n = n())
+    summarise(wins = sum(win), rate = mean(win), n = n()) %>% setDT()
 
-fcst_test_fit_prophet_boost_tuned %>% plot_fcst()
+fcst_test_fit_prophet_boost_tuned %>% plot_fcst(scales = "free_y")
+
+prophet_winrate[,.(total_wins = sum(wins), total_rate = sum(wins)/sum(n))]
+
+# merge(prophet_winrate, prophet_winrate_long, by = "symbol")
+merge(prophet_winrate, xgboost_winrate, by = "symbol")
 
 # save tune results
 write_rds(tune_results_prophet_boost, "02_models/tune_results_prophet_boost.rds")
@@ -1464,9 +1640,7 @@ model_spec_earth_tune <- mars(
 
 wflw_spec_earth_tune <- workflow() %>% 
   add_model(model_spec_earth_tune) %>% 
-  add_recipe(recipe_spec %>% step_rm(date)) %>% 
-  update_recipe(recipe_spec %>% step_rm(contains("sin")))
-    # add_recipe(recipe_spec %>% update_role(date, new_role = 'indicator'))
+  add_recipe(recipe_spec_short %>% step_rm(date))
 
 # ** Tuning
 
@@ -1474,7 +1648,7 @@ start <- Sys.time()
 set.seed(69)
 tune_results_earth <- wflw_spec_earth_tune %>% 
     tune_grid(
-        resamples = resamples_kfold,
+        resamples = resamples_kfold_short,
         grid = 6,
         control = control_grid(verbose = T, parallel_over = NULL)
     )
@@ -1492,19 +1666,41 @@ tune_results_earth %>%
 
 wflw_fit_earth_tuned <- wflw_spec_earth_tune %>% 
     finalize_workflow(select_best(tune_results_earth, metric = "rmse")) %>% 
-    fit(training(splits))
+    fit(training(splits_short))
 
 gc()
 
-modeltime_table(wflw_fit_earth_tuned) %>% 
-    modeltime_calibrate(new_data = testing(splits) %>% 
-                            filter(symbol == testing_symbol)) %>% 
-    modeltime_forecast(actual_data = data_prepared_tbl %>% 
-                           filter(symbol == testing_symbol), 
-                       new_data = testing(splits) %>% 
-                           filter(symbol == testing_symbol)
-    ) %>% 
-    plot_modeltime_forecast()
+augment(wflw_fit_earth_tuned,testing(splits_short)) %>% 
+    mutate(error = .pred-Return_fwd_21) %>% 
+    summarise(rmse = sqrt(mean(error^2)))
+
+augment(wflw_fit_earth_tuned,testing(splits_short)) %>% 
+    rsq(.pred, Return_fwd_21)
+
+fcst_test_fit_earth <- modeltime_table(wflw_fit_earth_tuned) %>% 
+    modeltime_calibrate(new_data = testing(splits_short), id = "symbol") %>% 
+    modeltime_forecast(actual_data = data_prepared_dt_short, 
+                       new_data = testing(splits_short),
+                       keep_data = T, conf_by_id = T) 
+
+earth_winrate <- fcst_test_fit_earth %>%
+    filter(!is.na(.model_id)) %>% 
+    select(.index, symbol, .value, Return_fwd_21) %>% 
+    rename(prediction = .value, actual = Return_fwd_21) %>% 
+    #filter(.index == "2025-09-17") %>% 
+    # pivot_wider(names_from = .key, values_from = .value) %>% 
+    # filter(!is.na(prediction)) %>% 
+    mutate(win = if_else((actual >= 0 & prediction >= 0)|
+                             (actual < 0 & prediction < 0),
+                         1, 0)) %>% 
+    group_by(symbol) %>% 
+    summarise(wins = sum(win), rate = mean(win), n = n()) %>% setDT()
+
+earth_winrate[,.(total_wins = sum(wins), winrate = sum(wins)/sum(n))] 
+
+fcst_test_fit_earth %>% 
+    filter(symbol == "AAPL") %>% 
+    plot_modeltime_forecast(.conf_interval_show = F)
 
 # * Test CatBoost ----
 # https://catboost.ai/docs/en/
@@ -1535,18 +1731,19 @@ end-start
 
 set.seed(69)
 start <- Sys.time()
-wflw_fit_cb <- workflow() %>% 
+wflw_fit_cb_short <- workflow() %>% 
     add_model(model_spec_catboost) %>% 
-    add_recipe(recipe_spec %>% step_rm(date)) %>% 
-    fit(training(splits))
-#fit_resamples(resamples_kfold)
+    add_recipe(recipe_spec_short %>% step_rm(date)) %>% 
+    #fit(training(splits))
+    fit(train_short)
 end <- Sys.time()
 end-start
 
 wflw_fit_cb
+wflw_fit_cb_short
 # collect_metrics(wflw_fit_cb)
 
-extract_fit_engine(wflw_fit_cb) %>% 
+extract_fit_engine(wflw_fit_cb_short) %>% 
     catboost::catboost.get_feature_importance(model = .) %>%
     as_tibble(rownames = 'Variable') %>% 
     #enframe(name = 'Variable',) %>%
@@ -1566,7 +1763,14 @@ augment(wflw_fit_cb,testing(splits)) %>%
 augment(wflw_fit_cb,testing(splits)) %>% 
     rsq(.pred, Return_fwd_21)
 
-# finalize model
+augment(wflw_fit_cb_short,testing(splits)) %>% 
+    mutate(error = .pred-Return_fwd_21) %>% 
+    summarise(rmse = sqrt(mean(error^2)))
+
+augment(wflw_fit_cb_short,testing(splits)) %>% 
+    rsq(.pred, Return_fwd_21)
+
+# ** catboost tuning - skip for now ----
 wflw_fit_catboost_final <- workflow() %>% 
     add_model(model_spec_catboost) %>% 
     add_recipe(recipe_spec %>% step_rm(date)) %>% 
@@ -1625,35 +1829,44 @@ wflw_fit_catboost_tuned <- wflw_spec_catboost_tune %>%
     finalize_workflow(select_best(tune_results_catboost, metric = "rmse")) %>% 
     fit(training(splits))
 
-# accuracy on testing
+# ** catboost accuracy on testing ----
 calibrate_and_plot(wflw_fit_cb, plot = F)
 calibrate_and_plot(wflw_fit_catboost_tuned, plot = F)
 
 testing_symbol <- 'AAPL'
 
-fcst_test_fit_catboost <- #modeltime_table(wflw_fit_catboost_tuned) %>% 
-    modeltime_table(wflw_fit_cb) %>%
+fcst_test_fit_catboost <- modeltime_table(wflw_fit_cb_short) %>%
     modeltime_calibrate(new_data = testing(splits), id = "symbol") %>% 
-    modeltime_forecast(actual_data = data_prepared_tbl, 
+    modeltime_forecast(actual_data = data_prepared_dt_short[!is.na(Return_fwd_21)], 
                        new_data = testing(splits), keep_data = T)
 
-fcst_test_fit_catboost %>%
+catboost_winrate <- fcst_test_fit_catboost %>%
     filter(!is.na(.model_id)) %>% 
+    # filter(date == max(date)) %>% 
     select(.index, symbol, .value, Return_fwd_21) %>% 
     rename(prediction = .value, actual = Return_fwd_21) %>% 
     #filter(.index == "2025-09-17") %>% 
     # pivot_wider(names_from = .key, values_from = .value) %>% 
     # filter(!is.na(prediction)) %>% 
-    mutate(direction = if_else((actual >= 0 & prediction >= 0)|
+    mutate(win = if_else((actual >= 0 & prediction >= 0)|
                                    (actual < 0 & prediction < 0),
                                1, 0)) %>% 
     group_by(symbol) %>% 
-    summarise(sum = sum(direction), mean = mean(direction), n = n())
+    summarise(wins = sum(win), rate = mean(win), n = n()) %>% 
+    ungroup() %>% 
+    mutate(model = "catboost") %>% setDT()
 
-fcst_test_fit_catboost %>% plot_fcst()
+# fcst_test_fit_catboost %>% plot_fcst()
 
-fcst_test_fit_catboost_tuned %>% 
-    plot_modeltime_forecast(.conf_interval_show = T)
+fcst_test_fit_catboost %>% 
+    filter(symbol == "AAPL") %>% 
+    plot_modeltime_forecast(.conf_interval_show = F)
+
+# merge(catboost_winrate, catboost_winrate_long, by = "symbol")
+catboost_winrate[,.(total_wins = sum(wins), total_rate = sum(wins)/sum(n))]
+merge(catboost_winrate, lgboost_winrate[,!c("n")], by = "symbol")
+merge(catboost_winrate, xgboost_winrate[,!c("n")], by = "symbol")
+# catboost_winrate_long %>% summarise(total_wins = sum(wins))
 
 # save tune results
 write_rds(tune_results_catboost, "02_models/tune_results_catboost.rds")
@@ -1673,23 +1886,25 @@ model_spec_glmnet_tune <- linear_reg(
   set_engine('glmnet')
 
 wflw_spec_glmnet_tune <- workflow() %>% 
-  add_model(model_spec_glmnet_tune) %>% 
-  add_recipe(recipe_spec %>% step_rm(date) %>% step_ts_impute(all_numeric_predictors()))
-# add_recipe(recipe_spec %>% update_role(date, new_role = 'indicator'))
+    add_model(model_spec_glmnet_tune) %>% 
+    add_recipe(recipe_spec_short %>% step_rm(date) %>% step_ts_impute(all_numeric_predictors()))
 
 # ** Tuning
 set.seed(69)
 start <- Sys.time()
 tune_results_glmnet <- wflw_spec_glmnet_tune %>% 
-  tune_grid(
-    resamples = resamples_kfold,
-    grid = 6,
-    control = control_grid(verbose = T, parallel_over = NULL)
+  tune_race_anova(
+    # resamples = resamples_kfold,
+    resamples = resamples_kfold_short,
+    grid = 10,
+    control = control_race(verbose = T, parallel_over = NULL)
   )
 end <- Sys.time()
 end-start
 
 # ** Results
+collect_metrics(tune_results_glmnet)
+
 tune_results_glmnet %>% 
   show_best(metric = "rmse", n = Inf)
 
@@ -1699,18 +1914,11 @@ tune_results_glmnet %>%
 # ** Finalize
 
 wflw_fit_glmnet_tuned <- wflw_spec_glmnet_tune %>% 
-  finalize_workflow(select_best(tune_results_glmnet, metric = "rmse")) %>% 
-  fit(training(splits))
+  finalize_workflow(select_best(tune_results_glmnet, metric = "rmse")) %>%
+    # fit(training(splits_short))
+    fit(training(splits))
 
-modeltime_table(wflw_fit_glmnet_tuned) %>% 
-  modeltime_calibrate(new_data = testing(splits) %>% 
-                        filter(symbol == testing_symbol)) %>% 
-  modeltime_forecast(actual_data = data_prepared_tbl %>% 
-                       filter(symbol == testing_symbol), 
-                     new_data = testing(splits) %>% 
-                       filter(symbol == testing_symbol)
-  ) %>% 
-  plot_modeltime_forecast()
+# ** GLMNet testing accuracy ----
 
 augment(wflw_fit_glmnet_tuned,testing(splits)) %>% 
     mutate(error = .pred-Return_fwd_21) %>% 
@@ -1719,7 +1927,35 @@ augment(wflw_fit_glmnet_tuned,testing(splits)) %>%
 augment(wflw_fit_glmnet_tuned,testing(splits)) %>% 
     rsq(.pred, Return_fwd_21)
 
-calibrate_and_plot(wflw_fit_glmnet_tuned, plot =F)
+# calibrate_and_plot(wflw_fit_glmnet_tuned, plot =F)
+
+fcst_test_fit_glmnet_tuned <- modeltime_table(wflw_fit_glmnet_tuned) %>% 
+    modeltime_calibrate(new_data = testing(splits), id = "symbol") %>% 
+    modeltime_forecast(actual_data = data_prepared_dt_short[!is.na(Return_fwd_21),], 
+                       new_data = testing(splits),
+                       keep_data = T, conf_by_id = T) 
+
+fcst_test_fit_glmnet_tuned %>% 
+    filter(symbol == "AAPL") %>% 
+    plot_modeltime_forecast(.conf_interval_show = F)
+
+glmnet_winrate <- fcst_test_fit_glmnet_tuned %>% 
+    filter(!is.na(.model_id)) %>% 
+    select(.index, symbol, .value, Return_fwd_21) %>% 
+    rename(prediction = .value, actual = Return_fwd_21) %>% 
+    #filter(.index == "2025-09-17") %>% 
+    # pivot_wider(names_from = .key, values_from = .value) %>% 
+    # filter(!is.na(prediction)) %>% 
+    mutate(win = if_else((actual >= 0 & prediction >= 0)|
+                             (actual < 0 & prediction < 0),
+                         1, 0)) %>% 
+    group_by(symbol) %>% 
+    summarise(wins = sum(win), rate = mean(win), n = n()) %>% 
+    mutate(model = 'glmnet') %>% setDT()
+
+merge(glmnet_winrate, lgboost_winrate, by = "symbol")
+glmnet_winrate[,.(total_wins = sum(wins), winrate = sum(wins)/sum(n))]
+# glmnet_winrate_long[,.(total_wins = sum(wins))]
 
 # save tune results
 write_rds(tune_results_glmnet, "02_models/tune_results_glmnet.rds")
@@ -1727,7 +1963,6 @@ rm(tune_results_glmnet)
 rm(wflw_spec_glmnet_tune) # remove spec to save memory
 
 gc()
-
 
 # * Test RANDOM FOREST ranger ----
 # - Strengths: Can model seasonality very well
@@ -1740,19 +1975,30 @@ gc()
 # Model specification
 model_spec_rf <- rand_forest(
     "regression",
-    trees = 1000, min_n = 1 #mtry = 25, min_n = 25
+    # trees = 1000, min_n = 1 #mtry = 25, min_n = 25
     ) %>% 
-    set_engine("ranger", importance = 'impurity', splitrule  = "extratrees") 
+    set_engine("ranger", importance = 'permutation')#, splitrule  = "extratrees") 
+
+# workflow
+wflw_spec_rf <- workflow() %>% 
+    add_model(model_spec_rf) %>% 
+    add_recipe(recipe_spec_short %>% step_rm(date))
 
 # Fit
 set.seed(69)
-start <- Sys.time()
-wflw_fit_rf <- workflow() %>% 
-    add_model(model_spec_rf) %>% 
-    add_recipe(recipe_spec %>% step_rm(date)) %>% 
+start_r <- Sys.time()
+wflw_fit_rf_cv <- wflw_spec_rf %>% 
+    #fit(training(splits))
+    # fit_resamples(resamples_kfold)
+    fit_resamples(resamples_kfold_short)
+end_r <- Sys.time()
+end_r-start_r
+
+# finalize RF
+wflw_fit_rf_final <- wflw_spec_rf %>% 
+    finalize_workflow(select_best(wflw_fit_rf_cv, metric = "rmse")) %>%
+    # fit(training(splits_short))
     fit(training(splits))
-end <- Sys.time()
-end-start
 
 # Calibrate & Plot
 calibrate_and_plot(
@@ -1761,17 +2007,15 @@ calibrate_and_plot(
     plot = FALSE
 )
 
-modeltime_table(wflw_fit_rf) %>% 
-    modeltime_calibrate(new_data = testing(splits) %>% 
-                            filter(symbol == testing_symbol)) %>% 
-    modeltime_forecast(actual_data = data_prepared_tbl %>% 
-                           filter(symbol == testing_symbol), 
-                       new_data = testing(splits) %>% 
-                           filter(symbol == testing_symbol)
-    ) %>% 
-    plot_modeltime_forecast()
+# ** test accuracy -----
+augment(wflw_fit_rf_final,testing(splits)) %>% 
+    mutate(error = .pred-Return_fwd_21) %>% 
+    summarise(rmse = sqrt(mean(error^2)))
 
-wflw_fit_rf %>% 
+augment(wflw_fit_rf_final,testing(splits)) %>% 
+    rsq(.pred, Return_fwd_21)
+
+wflw_fit_rf_final %>% 
     extract_fit_engine() %>% 
     ranger::importance() %>% 
     enframe() %>% 
@@ -1787,6 +2031,41 @@ wflw_fit_rf %>%
     layout(title = "Random Forest Feature Importance",
            showlegend = F,
            yaxis = list(title = ""))
+
+
+fcst_test_fit_rf <- modeltime_table(wflw_fit_rf_final) %>%
+    modeltime_calibrate(new_data = testing(splits), id = "symbol") %>% 
+    modeltime_forecast(actual_data = data_prepared_dt_short[!is.na(Return_fwd_21)], 
+                       new_data = testing(splits), keep_data = T)
+
+ranger_winrate <- fcst_test_fit_rf %>%
+    filter(!is.na(.model_id)) %>% 
+    # filter(date == max(date)) %>% 
+    select(.index, symbol, .value, Return_fwd_21) %>% 
+    rename(prediction = .value, actual = Return_fwd_21) %>% 
+    #filter(.index == "2025-09-17") %>% 
+    # pivot_wider(names_from = .key, values_from = .value) %>% 
+    # filter(!is.na(prediction)) %>% 
+    mutate(win = if_else((actual >= 0 & prediction >= 0)|
+                             (actual < 0 & prediction < 0),
+                         1, 0)) %>% 
+    group_by(symbol) %>% 
+    summarise(wins = sum(win), rate = mean(win), n = n()) %>% 
+    ungroup() %>% 
+    mutate(model = 'randomforest') %>% setDT()
+
+ranger_winrate[,.(total_wins = sum(wins), total_rate = sum(wins)/sum(n))]
+merge(ranger_winrate, xgboost_winrate, by = "symbol")
+
+# fcst_test_fit_catboost %>% plot_fcst()
+
+fcst_test_fit_rf %>% 
+    filter(symbol == "AAPL") %>% 
+    plot_modeltime_forecast(.conf_interval_show = F)
+
+# merge(catboost_winrate, catboost_winrate_long, by = "symbol")
+merge(ranger_winrate, lgboost_winrate, by = "symbol")
+merge(ranger_winrate, xgboost_winrate, by = "symbol")
 
 # save tune results
 write_rds(wflw_fit_rf, "02_models/wflw_fit_rf.rds")
@@ -2076,12 +2355,12 @@ model_spec_nnet_tune <- mlp(
     penalty = tune(), 
     epochs = tune()
 ) %>%
-    # set_engine("nnet")
-    set_engine("brulee")
+    set_engine("nnet")
+    # set_engine("brulee")
 
 wflw_spec_nnet_tune <- workflow() %>%
     add_model(model_spec_nnet_tune) %>%
-    add_recipe(recipe_spec %>% 
+    add_recipe(recipe_spec_short %>% 
                    step_rm(date) %>% 
                    step_normalize(all_numeric_predictors()))
 
@@ -2090,7 +2369,7 @@ set.seed(69)
 start <- Sys.time()
 tune_results_nnet <- wflw_spec_nnet_tune %>% 
     tune_race_anova(
-        resamples = resamples_kfold,
+        resamples = resamples_kfold_short,
         grid = 4,
         control = control_race(verbose = T, parallel_over = NULL)
     )
@@ -2126,15 +2405,20 @@ fcst_test_fit_nnet_tune <- modeltime_table(wflw_fit_nnet_tuned) %>%
     modeltime_forecast(actual_data = data_prepared_tbl, 
                        new_data = testing(splits), keep_data = T)
 
-fcst_test_fit_nnet_tune %>%
+nnet_winrate <- fcst_test_fit_nnet_tune %>%
     select(-.model_id,-.model_desc, -.conf_lo, -.conf_hi) %>% 
     #filter(.index == "2025-09-17") %>% 
     pivot_wider(names_from = .key, values_from = .value) %>% 
     filter(!is.na(prediction)) %>% 
-    mutate(direction = if_else((actual >= 0 & prediction >= 0)|
+    mutate(win = if_else((actual >= 0 & prediction >= 0)|
                                    (actual < 0 & prediction < 0),
                                1, 0)) %>% 
-    summarise(count = n(),sum = sum(direction), mean = mean(direction))
+    summarise(count = n(),wins = sum(win), rate = mean(win)) %>% 
+    setDT()
+
+# nnet_winrate_long <- copy(nnet_winrate)
+
+nnet_winrate[,.(total_wins = sum(wins))]
 
 fcst_test_fit_nnet_tune %>% 
     filter(symbol == "ACN") %>% 
@@ -2203,10 +2487,10 @@ fcst_test_fit_cubist_tuned %>%
     #filter(.index == "2025-09-17") %>% 
     pivot_wider(names_from = .key, values_from = .value) %>% 
     filter(!is.na(prediction)) %>% 
-    mutate(direction = if_else((actual >= 0 & prediction >= 0)|
+    mutate(win = if_else((actual >= 0 & prediction >= 0)|
                                    (actual < 0 & prediction < 0),
                                1, 0)) %>% 
-    summarise(sum = sum(direction), mean = mean(direction))
+    summarise(wins = sum(win), rate = mean(win))
 
 # Calibrate & Plot
 calibrate_and_plot(
@@ -2540,18 +2824,6 @@ gc()
 
 # Modeling explanation ----
 # * feature importance ----
-extract_fit_engine(wflw_fit_xgboost_tuned) %>%
-  xgboost::xgb.importance(model = .) %>%
-  as_tibble() %>% View()
-  slice_max(Gain, n = 20) %>% 
-  mutate(Feature = as_factor(Feature) %>% fct_rev()) %>% 
-  ggplot(aes(x = Gain, y = Feature, fill = Feature))+
-  geom_col(alpha = 0.7)+
-  scale_fill_tq()+
-  theme_few()+
-  theme(legend.position = "none")+
-  ggtitle("XGBoost Feature Importance")
-
 extract_fit_engine(wflw_fit_lgb_tuned) %>%
   # extract_fit_engine(wflw_fit_lightgbm) %>%
   lightgbm::lgb.importance(model = .) %>% 
@@ -2564,6 +2836,18 @@ extract_fit_engine(wflw_fit_lgb_tuned) %>%
   theme_few()+
   theme(legend.position = "none")+
   ggtitle("LightGBM Feature Importance")
+
+extract_fit_engine(wflw_fit_xgboost_tuned) %>%
+    xgboost::xgb.importance(model = .) %>%
+    as_tibble() %>% View()
+    slice_max(Gain, n = 20) %>% 
+    mutate(Feature = as_factor(Feature) %>% fct_rev()) %>% 
+    ggplot(aes(x = Gain, y = Feature, fill = Feature))+
+    geom_col(alpha = 0.7)+
+    scale_fill_tq()+
+    theme_few()+
+    theme(legend.position = "none")+
+    ggtitle("XGBoost Feature Importance")
 
 extract_fit_engine(wflw_fit_xgboost_tuned) %>%
 extract_fit_engine(wflw_fit_lgb_tuned) %>%
@@ -2588,7 +2872,9 @@ bind_rows(extract_fit_engine(wflw_fit_xgboost_tuned) %>%
               arrange(desc(Gain)) %>% 
               mutate(rank = row_number(),
                      model = "lightgbm")) %>% #View()
+    group_by(model) %>% 
     slice_max(Gain, n = 20) %>% 
+    ungroup() %>% 
     ggplot(aes(x = Gain,
                y = reorder_within(x = Feature, by = Gain, within = model),
                fill = model)
@@ -2624,14 +2910,16 @@ multi_calibrate %>%
 fit <- extract_fit_parsnip(wflw_fit_lgb_tuned)
 fit <- extract_fit_parsnip(wflw_fit_xgboost_tuned)
 
+fit_names <- fit[["preproc"]][["x_names"]]
+
 df_explain  <- bake( 
-  prep(recipe_spec), 
+  prep(recipe_spec_short), 
   has_role("predictor"),
   new_data = training(splits)) %>% 
   select(-date) %>% 
-    select(all_of(fit[["preproc"]][["x_names"]]))
+    select(all_of(fit_names))
 
-shap_values <- extract_fit_engine(wflw_fit_lgb_tuned) %>% 
+shap_values <- extract_fit_engine(wflw_fit_xgboost_tuned) %>% 
   shapviz(X_pred = data.matrix(df_explain), 
           X = df_explain)
 
@@ -2685,7 +2973,7 @@ shap_values %>%
   theme_minimal()
 
 shap_values %>% 
-  sv_dependence("Close_momentum_21_252_126", alpha = 0.7) +
+  sv_dependence("Close_ratio_crude", alpha = 0.7) +
   scale_color_gradient(high = "#ff0d57", low = "#1e88e5")+
   theme_minimal()
 
@@ -2731,15 +3019,16 @@ submodels_tbl <- modeltime_table(
   wflw_fit_xgboost_tuned
   ,wflw_fit_lgb_tuned
   ,wflw_fit_prophet_boost_tuned
-  ,wflw_fit_cb
+  ,wflw_fit_cb_short
   ,wflw_fit_glmnet_tuned
+  ,wflw_fit_rf_final
 ) %>% 
     update_model_description(1, "XGBOOST - Tuned") %>% 
     update_model_description(2, "LightGBM - Tuned") %>% 
     update_model_description(3, "Prophet Boost - Tuned") %>% 
     update_model_description(4, "CatBoost") %>% 
-    update_model_description(5, "GLMNet - Tuned")
-#update_model_description(2, "RandomForest")
+    update_model_description(5, "GLMNet - Tuned") %>% 
+    update_model_description(6, "RandomForest")
 
 
 # * Calibration ----
@@ -2773,7 +3062,7 @@ acc_by_symbol <- calibration_tbl %>%
     ungroup() %>% 
     pivot_wider(names_from = name, values_from = value)
 
-write_rds(acc_by_symbol, str_glue("02_models/{today()}_acc_by_symbol.rds"))
+# write_rds(acc_by_symbol, str_glue("02_models/{today()}_acc_by_symbol.rds"))
 
 # * Forecast symbols ----
 # extract the subset of symbols that have the lowest rmse
@@ -2791,19 +3080,21 @@ gc()
 forecast_test <- calibration_tbl %>% 
     modeltime_forecast(
         new_data   = testing(splits),
-        actual_data = data_prepared_tbl,
+        actual_data = data_prepared_dt_short[!is.na(Return_fwd_21)],#data_prepared_tbl,
         keep_data  = T, # keeps the grouping variable and base data
         conf_by_id = T) 
 
 forecast_test %>% plot_fcst()
 
+forecast_test %>% filter(symbol == "AAPL") %>% plot_modeltime_forecast(.conf_interval_show = F)
+
 # * backtesting ----
 back_fcst <- calibration_tbl %>% 
     modeltime_forecast(
-        new_data = data_prepared_tbl %>% 
+        new_data = data_prepared_dt_short %>% 
             filter(date %between% c("2025-12-01","2025-12-10")) %>% 
             drop_na(),
-        actual_data = data_prepared_tbl %>% 
+        actual_data = data_prepared_dt_short %>% 
             filter(date %between% c("2025-11-01","2025-12-10")) %>% 
             drop_na(),
         keep_data = T,
@@ -2811,7 +3102,7 @@ back_fcst <- calibration_tbl %>%
     ) 
 
 back_fcst %>% 
-    filter(date == "2025-12-06" ) %>% 
+    filter(date == "2025-12-08" ) %>% 
     arrange(desc(.value))
 
 backtest <- back_fcst %>% 
@@ -2836,7 +3127,7 @@ rmse(backtest, truth = ACTUAL, estimate = forecast_mean)
 #symbol %in% c("NVDA","GE","FI","FIS","CTAS","WELL","MSFT","MMM","IRM","NVDA","TT")
 
 back_fcst %>% 
-    plot_modeltime_forecast(.facet_vars = symbol, .facet_ncol = 3)
+    plot_modeltime_forecast(.facet_vars = symbol, .facet_ncol = 4)
 
 # ** forecast test plot ----
 forecast_test %>% 
@@ -2908,11 +3199,24 @@ model_tbl_tuned_resamples %>%
 # * Resampling Accuracy Plot ----
 model_tbl_tuned_resamples %>% 
     plot_modeltime_resamples(
-        .metric_set = metric_set(mae, rmse, rsq),
+        .metric_set = metric_set(rmse, rsq),
         .point_size = 2,
         .point_alpha = 0.8,
         .facet_ncol = 1
     )
+
+model_tbl_tuned_resamples %>% 
+    modeltime_resample_accuracy(
+        metric_set = metric_set(rmse, rsq),
+        summary_fns = NULL
+    ) %>% 
+    select(.model_desc, rmse, rsq) %>% 
+    pivot_longer(-.model_desc) %>% 
+    ggplot(aes(x = .model_desc, y = value, fill = .model_desc))+
+    geom_boxplot(alpha = 0.7, show.legend = F) +
+    facet_grid(name~., scales = "free_y")+
+    scale_fill_tq()+
+    theme_tq()
 
 # 7.0 ENSEMBLE PANEL MODELS -----
 
@@ -2930,6 +3234,8 @@ model_ensemble_tbl <- modeltime_table(ensemble_fit)
 
 # * Accuracy ----
 model_ensemble_tbl %>% 
+    modeltime_calibrate(testing(splits),
+                        id = "symbol") %>% 
   modeltime_accuracy(testing(splits),
                      metric_set = extended_forecast_accuracy_metric_set())
 
@@ -2944,7 +3250,7 @@ ensemble_fit_wt <- submodels_tbl %>%
 
 ensemble_fit_wt$fit$loadings_tbl
 
-# * Calibrate ensemble ----
+# * Calibrate weighted ensemble ----
 
 model_ensemble_tbl_wt <- modeltime_table(
   ensemble_fit_wt
@@ -2960,22 +3266,22 @@ write_rds(model_ensemble_tbl_wt,
           str_glue("02_models/{today()}_model_ensemble_tbl_wt.rds"),
           compress = "gz")
 
-# * lm stack SKIP ----
+# * lm stack Test ----
 # linear regression stacking does not seem to offer much improvement if any
 # and the computation on the prophet boosting is very intensive
 
-# refit samples
+# ** refit samples ----
 submodels_resamples_kfold_tbl <- submodels_tbl %>% 
  #filter(.model_id %in% c(1:3)) %>% 
   modeltime_fit_resamples(
-    resamples = resamples_kfold,
-    control   = control_resamples(
-      verbose   = T,
+    resamples       = resamples_kfold_short,
+    control         = control_resamples(
+      verbose       = T,
       parallel_over = NULL
     )
   )
 
-# only if prophet boost fails
+# ** workaround if prophet boost fails ----
 prophet_boost_resamples_tbl <- modeltime_table(
   wflw_fit_prophet_boost_tuned
   ) %>%  
@@ -2996,26 +3302,28 @@ submodels_resamples_kfold_tbl_cal <- submodels_resamples_kfold_tbl %>%
                         id = "symbol")
 
 
-# fit lm
+# ** fit lm ----
 ensemble_fit_lm <- submodels_resamples_kfold_tbl %>% 
   ensemble_model_spec(
     model_spec = linear_reg() %>% set_engine("lm"),
-    control = control_grid(verbose = T)
+    control    = control_grid(verbose = T)
   )
 
 # test accuracy
 modeltime_table(
   ensemble_fit_lm
 ) %>% 
-  modeltime_accuracy(testing(splits))
+  modeltime_accuracy(testing(splits_short))
 
 # 8.0 Ensemble Forecast test ----
+# * Ensemble forecast
 gc()
-forecast_ensemble_test_tbl <- model_ensemble_tbl %>% #model_ensemble_tbl_wt %>% 
+forecast_ensemble_test_tbl <- model_ensemble_tbl_wt %>% 
+                              #model_ensemble_tbl %>%
     modeltime_forecast(
-        new_data = testing(splits),
-        actual_data = data_prepared_tbl,
-        keep_data = T
+        new_data    = testing(splits),
+        actual_data = data_prepared_dt_short[!is.na(Return_fwd_21)],#data_prepared_dt_short,
+        keep_data   = T
     )
 
 # * ensemble forecast test plot ----
@@ -3023,7 +3331,7 @@ forecast_ensemble_test_tbl %>%
     group_by(symbol) %>% 
     plot_modeltime_forecast(
         .facet_ncol = 3,
-        #.conf_interval_show = F,
+        .conf_interval_show = F,
         .interactive = T,
         .legend_show = F,
         .trelliscope = T
@@ -3052,7 +3360,7 @@ model_ensemble_refit_tbl <- model_ensemble_tbl_wt %>%
     modeltime_refit(data_prepared_clean_tbl)
 
 # * Ensemble final forecast ----
-final_forecast_tbl <- forecast_tbl #%>% filter(symbol %in% forecast_symbols)
+final_forecast_tbl <- forecast_tbl %>% filter(symbol %in% forecast_symbols)
 
 model_ensemble_final_forecast <- model_ensemble_refit_tbl %>% 
     modeltime_forecast(
@@ -3073,7 +3381,8 @@ model_ensemble_final_forecast %>%
         .legend_show = F,
         .trelliscope = F
     )
-model_ensemble_final_forecast %>% plot_fcst()
+
+model_ensemble_final_forecast %>% plot_fcst(scales = "free_y", ncol = 4)
 
 # * View final forecasts ----
 model_ensemble_final_forecast %>% 
@@ -3089,7 +3398,7 @@ model_ensemble_final_forecast %>%
     left_join(acc_by_symbol) %>%
     filter(.value >= 0) %>% 
     #slice_min(rmse, n = 30) %>% 
-    #filter(rmse < 0.07) %>% 
+    filter(rmse < 0.07) %>% 
     arrange(desc(.value))
 
 # * Turn OFF Parallel Backend ----
@@ -3131,3 +3440,4 @@ model_ensemble_final_forecast %>%
 # 10.0 save forecasts ----
 write_rds(model_ensemble_final_forecast,
           str_glue("01_save_data/01_saved_forecasts/{today()}_model_ensemble_final_forecast.rds"))
+
