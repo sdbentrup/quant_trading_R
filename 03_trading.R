@@ -26,8 +26,8 @@ library(doParallel)
 
 # Import data from forecast ----
 #change to the most recent forecast saved
-model_ensemble_final_forecast <- read_rds("01_save_data/01_saved_forecasts/2026-02-11_model_ensemble_final_forecast.rds")
-acc_by_symbol <- read_rds("02_models/2026-02-11_acc_by_symbol.rds")
+model_ensemble_final_forecast <- read_rds("01_save_data/01_saved_forecasts/2026-04-22_model_ensemble_final_forecast.rds")
+acc_by_symbol <- read_rds("02_models/2026-04-22_acc_by_symbol.rds")
 
 model_ensemble_final_forecast %>% 
   arrange(desc(date)) %>% 
@@ -40,9 +40,9 @@ model_ensemble_final_forecast %>%
   select(symbol, .value, rmse, mae, rsq)
 
 model_ensemble_final_forecast %>% 
-    filter(date == max(date)) %>% 
-    slice_max(.value, n = 12) %>%
-    # filter(.value >= 0.01) %>% 
+    filter(date == max(date)) %>%
+    filter(.value >= 0.006) %>% 
+    slice_max(.value, n = 10) %>%
     select(symbol, .value) %>% 
     summarise(mean = mean(.value))
 
@@ -51,9 +51,9 @@ stock_picks <- model_ensemble_final_forecast %>%
     merge(acc_by_symbol) %>% 
     select(symbol, date, .value, rmse, rsq) %>% 
     filter(date == max(date)) %>%
-    filter(rmse < 0.05) %>% 
+    #filter(rmse < 0.05) %>% 
     filter(.value > 0) %>% 
-    slice_max(.value, n = 12) %>% 
+    slice_max(.value, n = 10) %>% 
     pull(symbol) %>% 
     as.character()
 
@@ -130,11 +130,11 @@ stocks_table <- copy(final_prices)
 
 # CREATE function for equal weighting or weighting from optimization?
 
-# equal weight
+# ** OPTION 1  equal weight
 stocks_table[,target_shares := floor((port_value/length(stock_picks))/lastPrice)]
 stocks_table[,.(value = lastPrice*target_shares)]
 
-# optimiztion weights
+# ** OPTION 2 optimiztion weights
 stocks_table <- merge(stocks_table,
                       opt_weights,
                       by.x = "symbol",
@@ -220,7 +220,7 @@ actions_history_table <- rbind(actions_history_table, actions_table)
 
 write_rds(actions_history_table, str_glue("03_actions/actions_history_table.rds"))
 
-actions_history_table[,.(pl = sum(unrealizedPNL),value = sum(marketValue)),date][,.(pl, value, ROC(value,1))]
+actions_history_table[,.(pl = sum(unrealizedPNL),value = sum(marketValue)),date][,.(date,pl, value, ROC(value,1))]
 
 # close the tws session ----
 twsDisconnect(tws)

@@ -1,4 +1,3 @@
-<<<<<<< HEAD:01_predicting_full.R
 # forecast stock returns
 # notes and commentary ----
 # try to predict returns 21-days forward. consider papers:

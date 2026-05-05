@@ -9,9 +9,11 @@ library(doParallel)
 # library(GSE)
 
 # import data from saved data ----
-full_data <- read_rds("01_save_data/2025-11-05_full_data.rds")
+full_data <- read_rds("01_save_data/2026-04-22_prices_features_dt.rds")
 
-model_ensemble_final_forecast <- read_rds("04-Financial/04_01_save_data/2025-07-11_model_ensemble_final_forecast.rds")
+# model_ensemble_final_forecast <- read_rds("01_save_data/01_saved_forecasts/2026-04-22_model_ensemble_final_forecast.rds")
+# model_ensemble_refit_tbl <- read_rds("02_models/model_ensemble_refit_tbl.rds")
+# model_ensemble_tbl_wt <- read_rds(model_ensemble_tbl_wt, "02_models/model_ensemble_tbl_wt.rds")
 
 # market data for a baseline ----
 sp <- tq_get(x = "^SPX", get = "stock.prices", from = today() - years(5),complete_cases = T)

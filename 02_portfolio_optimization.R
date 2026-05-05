@@ -18,7 +18,7 @@ library(doParallel)
 # library(GSE)
 
 # import data from saved data ----
-model_ensemble_final_forecast <- read_rds("04-Financial/04_01_save_data/2025-07-11_model_ensemble_final_forecast.rds")
+model_ensemble_final_forecast <-read_rds("01_save_data/01_saved_forecasts/2026-04-22_model_ensemble_final_forecast.rds")
 
 model_ensemble_final_forecast %>%
   filter(date == max(date) & .value > 0) %>%
@@ -39,7 +39,6 @@ prices <- tq_get(stock_picks, from = today()-years(6))
 # * Review returns by symbol ----
 prices %>%
   ggplot(aes(x = date, y = close)) +
-  
   geom_candlestick(aes(open = open, high = high, low = low, close = close),
                    colour_up = "darkgreen", colour_down = "darkred", 
                    fill_up  = "darkgreen", fill_down  = "darkred") +
@@ -53,7 +52,7 @@ returns <- prices %>%
   tq_transmute(select = close,
                mutate_fun = periodReturn,
                period = 'weekly',
-               col_rename = "close_ret") %>% 
+               col_rename = "close_ret",) %>% 
   ungroup()
 
 
@@ -76,7 +75,7 @@ returns %>%
   group_by(symbol) %>%
   tq_performance(Ra = close_ret,
                  performance_fun = SharpeRatio,
-                 Rf = 0.05/12)
+                 Rf = 0.04/12)
 # optimize current portfolio risk parity ----
 
 # * setup optimization ----
@@ -113,12 +112,14 @@ port_opt_rebal <- optimize.portfolio.rebalancing(returns_xts,
 port_opt <- optimize.portfolio(returns_xts,
                                portfolio = port_spec,
                                #rp = sp500_rp,
-                               optimize_method = "DEoptim", 
+                               optimize_method = "CVXR",
+                               #optimize_method = "DEoptim", traceDE=10, 
                                # search_size = 20000,
                                #, "random", "ROI", "ROI_old", "pso", "GenSA","CVXR"
                                # momentFUN = "custom.covRob.Mcd",#"custom.covRob.TSGS","custom.covRob.MM"
                                #arguments = list("black_litterman"),
-                               trace=TRUE, traceDE=10)
+                               trace=TRUE
+                               )
 
 
 stopImplicitCluster()
