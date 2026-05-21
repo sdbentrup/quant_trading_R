@@ -8,8 +8,26 @@ library(doParallel)
 # library(RobStatTM)
 # library(GSE)
 
-# import data from saved data ----
-full_data <- read_rds("01_save_data/2026-04-22_prices_features_dt.rds")
+# Backtesting data ----
+# * import data from saved data ----
+prices_features_dt <- read_rds("01_save_data/2026-04-22_prices_features_dt.rds")
+
+# * prepare prices to match prepared data for modeling
+data_prepared_dt <- prices_features_dt[!is.na(Close_momentum_21_252_126) &
+                                           !is.na(Vol_WAP_norm),
+                                       select(.SD,
+                                              -(open:adjusted),
+                                              -Return_fwd_5, -Return_fwd_10,
+                                              -contains("_lag_"),
+                                              -contains("_lead_"))] %>% 
+    group_by(symbol) %>%
+    tk_augment_fourier(date, .periods = c(252), .K = 1) %>%
+    ungroup() %>% 
+    setDT()
+
+data_prepared_dt[,rowid := 1:.N]
+
+setcolorder(data_prepared_dt, "rowid", before = "symbol")
 
 # model_ensemble_final_forecast <- read_rds("01_save_data/01_saved_forecasts/2026-04-22_model_ensemble_final_forecast.rds")
 # model_ensemble_refit_tbl <- read_rds("02_models/model_ensemble_refit_tbl.rds")
@@ -26,14 +44,14 @@ sp_returns <- sp %>%
 sp_xts <- as.xts(sp_returns)
 
 # create backtesting data ----
-backtest_full_data <- full_data[date %in% full_data[, .(date = max(date)), by = .(year = year(date), month = month(date))][,date]]
-backtest_full_data <- backtest_full_data[symbol %in% unique(model_ensemble_final_forecast$symbol)] %>% drop_na() %>% droplevels()
+backtest_prep_data <- data_prepared_dt[date %in% data_prepared_dt[, .(date = max(date)), by = .(year = year(date), month = month(date))][,date]]
+backtest_data <- backtest_prep_data[symbol %in% unique(model_ensemble_final_forecast$symbol)] %>% drop_na() %>% droplevels()
 
 backtest_full_data %>% summary()
 
 forecast_ensemble_backtest <- model_ensemble_refit_tbl %>% #modeltime_table(wflw_fit_lgb_tuned) %>% #model_ensemble_tbl_wt %>% 
     modeltime_forecast(
-        new_data    = backtest_full_data,
+        new_data    = backtest_data,
         #actual_data = data_prepared_tbl,
         keep_data   = T,
         conf_by_id  = T

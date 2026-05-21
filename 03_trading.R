@@ -17,6 +17,7 @@
 #install.packages("IBrokers")
 library(IBrokers)
 library(tidyverse)
+library(future.apply)
 library(plotly)
 library(data.table)
 library(PortfolioAnalytics)
@@ -26,34 +27,34 @@ library(doParallel)
 
 # Import data from forecast ----
 #change to the most recent forecast saved
-model_ensemble_final_forecast <- read_rds("01_save_data/01_saved_forecasts/2026-04-22_model_ensemble_final_forecast.rds")
-acc_by_symbol <- read_rds("02_models/2026-04-22_acc_by_symbol.rds")
+model_ensemble_final_forecast <- read_rds("01_save_data/01_saved_forecasts/2026-05-27_model_ensemble_final_forecast.rds")
+acc_by_symbol <- read_rds("02_models/2026-05-27_acc_by_symbol.rds")
 
-model_ensemble_final_forecast %>% 
-  arrange(desc(date)) %>% 
-  dplyr::select(symbol, .value, date)
-
-model_ensemble_final_forecast %>% 
-  filter(date == max(date)) %>% 
+forecast_acc_sybmol <- model_ensemble_final_forecast %>% 
+    filter(date == max(date)) %>% 
     merge(acc_by_symbol) %>% 
-  slice_max(.value, n = 12) %>% 
-  select(symbol, .value, rmse, mae, rsq)
+    #filter(.value >= 0.006) %>% 
+    mutate(ev = (1-rmse) * .value) 
 
-model_ensemble_final_forecast %>% 
-    filter(date == max(date)) %>%
-    filter(.value >= 0.006) %>% 
-    slice_max(.value, n = 10) %>%
-    select(symbol, .value) %>% 
-    summarise(mean = mean(.value))
+forecast_acc_sybmol %>% 
+    slice_max(.value, n = 12) %>% 
+    select(symbol, .value, rmse, mae, rsq, ev)
+
+forecast_acc_sybmol %>% 
+    filter(.value >0) %>% 
+    slice_min(rmse, n = 12) %>% 
+    #slice_max(.value, n = 10) %>%
+    select(symbol, .value, rmse, mae, rsq, ev)
 
 # select the top n stocks
-stock_picks <- model_ensemble_final_forecast %>% 
-    merge(acc_by_symbol) %>% 
-    select(symbol, date, .value, rmse, rsq) %>% 
-    filter(date == max(date)) %>%
-    #filter(rmse < 0.05) %>% 
-    filter(.value > 0) %>% 
-    slice_max(.value, n = 10) %>% 
+stock_picks <- forecast_acc_sybmol %>% 
+    select(symbol, date, .value, rmse, rsq, ev) %>% 
+    # filter(rmse < 0.05) %>% 
+    # filter(.value > 0) %>% 
+    slice_min(rmse, n = 80) %>%
+    slice_max(.value, n = 10) %>%
+    # mutate(ev = (1-rmse) * .value) %>% 
+    # slice_max(ev, n = 10) %>% 
     pull(symbol) %>% 
     as.character()
 
@@ -167,6 +168,11 @@ actions_table[,qty := fifelse(action == "BUY",
                               target_shares-position,
                               position-target_shares)]
 
+actions_table[,":=" (
+    limit_price = fifelse(action == "BUY", round(lastPrice * 1.15,2),0),
+    stop_price  = fifelse(action == "BUY", round(lastPrice * 0.97,2),0)
+)]
+
 # calculate the new value, for reference only
 actions_table[,new_mkt_value := lastPrice*target_shares]
 
@@ -174,7 +180,7 @@ actions_table[,new_mkt_value := lastPrice*target_shares]
 setorder(actions_table, -action)
 
 actions_table
-actions_table[,.(sum(marketValue, na.rm = T),sum(new_mkt_value, na.rm = T))]
+actions_table[,.(prev_mkt = sum(marketValue, na.rm = T), new_mkt = sum(new_mkt_value, na.rm = T))]
 actions_table[action == "SELL",.(symbol,unrealizedPNL*(qty/position))]
 actions_table[action == "SELL",.(sum(unrealizedPNL*(qty/position)))]
 
@@ -186,25 +192,178 @@ port_value-actions_table[,.(sum(new_mkt_value, na.rm = T))]
 # how to do with multiple contracts? for loop or lapply?
 # placeOrder(twsconn=tws, Contract=twsSTK("AAPL"), Order=twsOrder(reqIds(tws), "BUY", 10, "MKT"))
 
+# test ordering function
+
+# symbol <- "AAPL"
+# action <- "BUY"
+# qty    <- 2
+# 
+# tp_price  <- round(309.19*1.15,2)
+# sl_price  <- round(309.19*0.97,2)
+# 
+# # Parent order (market buy)
+# parent_id <- as.numeric(reqIds(tws))
+# parent <- twsOrder(
+#     orderId   = parent_id,
+#     action    = "BUY",
+#     totalQuantity = qty,
+#     orderType = "MKT",
+#     transmit  = FALSE
+# )
+# # Take‑profit limit order
+# tp <- twsOrder(
+#     orderId   = parent_id + 1,
+#     action    = "SELL",
+#     totalQuantity = qty,
+#     orderType = "LMT",
+#     lmtPrice = tp_price,
+#     parentId = parent_id,
+#     transmit = FALSE
+# )
+# 
+# # Stop‑loss order
+# sl <- twsOrder(
+#     orderId   = parent_id + 2,
+#     action    = "SELL",
+#     totalQuantity = qty,
+#     orderType = "STP",
+#     auxPrice = sl_price,
+#     parentId = parent_id,
+#     transmit = TRUE   # last order transmits the whole bracket
+# )
+# 
+# # Send all three orders
+# placeOrder(tws, twsSTK(symbol), parent)
+# placeOrder(tws, twsSTK(symbol), tp)
+# placeOrder(tws, twsSTK(symbol), sl)
+
 # Define the order processing function
 order_function <- function(actions_table, tws) {
-  # Ensure the table is a data.table
-  setDT(actions_table)
-  
-  # Iterate through each row in the table
-  for (i in 1:nrow(actions_table)) {
-    symbol <- actions_table[i, symbol]
-    action <- actions_table[i, action]
-    qty <- actions_table[i, qty]
-    
-    # Place the order
-    placeOrder(
-      twsconn = tws,
-      Contract = twsSTK(symbol),
-      Order = twsOrder(reqIds(tws), action, qty, "MKT")
-    )
-  }
+
+    for (i in 1:nrow(actions_table)) {
+        
+        symbol <- actions_table[i, symbol]
+        action <- toupper(actions_table[i, action])
+        qty    <- actions_table[i, qty]
+        
+        # If BUY → create bracket order
+        if (action == "BUY") {
+            
+            tp_price  <- actions_table[i, limit_price]
+            sl_price  <- actions_table[i, stop_price]
+            
+            # Parent order (market buy)
+            #parent_id <- reqIds(tws)
+            parent_id <- as.numeric(reqIds(tws))
+            
+            parent <- twsOrder(
+                orderId       = parent_id,
+                action        = "BUY",
+                totalQuantity = qty,
+                orderType     = "MKT",
+                transmit      = FALSE
+            )
+            
+            # Take‑profit limit order
+            tp <- twsOrder(
+                orderId       = parent_id + 1,
+                action        = "SELL",
+                totalQuantity = qty,
+                orderType     = "LMT",
+                lmtPrice      = tp_price,
+                parentId      = parent_id,
+                transmit      = FALSE
+            )
+            
+            # Stop‑loss order
+            sl <- twsOrder(
+                orderId       = parent_id + 2,
+                action        = "SELL",
+                totalQuantity = qty,
+                orderType     = "STP",
+                auxPrice      = sl_price,
+                parentId      = parent_id,
+                transmit      = TRUE   # last order transmits the whole bracket
+            )
+            
+            # Send all three orders
+            placeOrder(tws, twsSTK(symbol), parent)
+            placeOrder(tws, twsSTK(symbol), tp)
+            placeOrder(tws, twsSTK(symbol), sl)
+            
+        } else {
+            
+            # Normal SELL order (no bracket)
+            placeOrder(
+                twsconn  = tws,
+                Contract = twsSTK(symbol),
+                Order    = twsOrder(reqIds(tws), "SELL", qty, "MKT")
+            )
+        }
+    }
 }
+
+# revised version without the loop call:
+order_function_dt <- function(actions_table, tws) {
+    
+    actions_table[, {
+        
+        symbol <- symbol
+        action <- toupper(action)
+        qty    <- qty
+        
+        if (action == "BUY") {
+            
+            tp_price <- limit_price
+            sl_price <- stop_price
+            
+            parent_id <- as.numeric(reqIds(tws))
+            
+            parent <- twsOrder(
+                orderId       = parent_id,
+                action        = "BUY",
+                totalQuantity = qty,
+                orderType     = "MKT",
+                transmit      = FALSE
+            )
+            
+            tp <- twsOrder(
+                orderId       = parent_id + 1,
+                action        = "SELL",
+                totalQuantity = qty,
+                orderType     = "LMT",
+                lmtPrice      = tp_price,
+                parentId      = parent_id,
+                transmit      = FALSE
+            )
+            
+            sl <- twsOrder(
+                orderId       = parent_id + 2,
+                action        = "SELL",
+                totalQuantity = qty,
+                orderType     = "STP",
+                auxPrice      = sl_price,
+                parentId      = parent_id,
+                transmit      = TRUE
+            )
+            
+            placeOrder(tws, twsSTK(symbol), parent)
+            placeOrder(tws, twsSTK(symbol), tp)
+            placeOrder(tws, twsSTK(symbol), sl)
+            
+        } else {
+            
+            placeOrder(
+                twsconn  = tws,
+                Contract = twsSTK(symbol),
+                Order    = twsOrder(reqIds(tws), "SELL", qty, "MKT")
+            )
+        }
+        
+        NULL
+    }]
+}
+
 
 # * submit orders THIS IS FOR REAL ----
 order_function(actions_table, tws)
@@ -216,7 +375,7 @@ write_rds(actions_table, str_glue("03_actions/{today()}_live_actions_table.rds")
 
 actions_history_table <- readRDS("03_actions/actions_history_table.rds")
 
-actions_history_table <- rbind(actions_history_table, actions_table)
+actions_history_table <- rbind(actions_history_table, actions_table, fill = T)
 
 write_rds(actions_history_table, str_glue("03_actions/actions_history_table.rds"))
 

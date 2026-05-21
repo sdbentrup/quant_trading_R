@@ -4,6 +4,7 @@
 # https://jfin-swufe.springeropen.com/articles/10.1186/s40854-024-00644-0
 # https://www.sciencedirect.com/science/article/pii/S2666827025000143
 # https://drive.google.com/file/d/1uvjBJ9D09T0_sp7kQppWpD-xelJ0KQhc/edit
+# https://academic.oup.com/rfs/article/33/5/2223/5758276
 
 # ideas:
 # nested forecasting: https://business-science.github.io/modeltime/articles/nested-forecasting.html
@@ -52,6 +53,7 @@ library(shapviz)
 
 # * dates ----
 from <- today() - years(4)
+train_date <- today() - years(2)-months(6)
 testing_symbol <- 'AAPL'
 
 # not used
@@ -282,11 +284,12 @@ add_features <- function(prices_dt, price) {
     )]
     
     #prices_dt[, Vol_OBV_standard := standardize_vec(OBV(price_col, volume))]
-    prices_dt[, Vol_OBV     := OBV(price_col, volume)]
-    prices_dt[, Vol_OBV_std := (Vol_OBV - frollmean(Vol_OBV, n = 126, align = 'right'))/frollsd(Vol_OBV, n = 126, align = 'right')]
-    prices_dt[, Vol_OBV     := NULL]
+    prices_dt[, Vol_OBV       := OBV(price_col, volume)]
+    prices_dt[, Vol_OBV_std   := (Vol_OBV - frollmean(Vol_OBV, n = 126, align = 'right'))/frollsd(Vol_OBV, n = 126, align = 'right')]
+    prices_dt[, Vol_OBV_ratio := Vol_OBV / frollmean(Vol_OBV, n = 126, align = 'right')]
+    prices_dt[, Vol_OBV       := NULL]
     
-    prices_dt[, Vol_MFI_21  := MFI(prices_dt[,.(high, low, close)], volume, n = 21)]
+    prices_dt[, Vol_MFI_21    := MFI(prices_dt[,.(high, low, close)], volume, n = 21)]
     
     # Momentum
     prices_dt[, `:=`(
@@ -346,6 +349,8 @@ data_prepared_dt <- prices_features_dt[!is.na(Close_momentum_21_252_126) &
     ungroup() %>% 
         setDT()
 
+# reset ordering by date and symbol
+setorderv(data_prepared_dt, c("date","symbol"))
 data_prepared_dt[,rowid := 1:.N]
 
 setcolorder(data_prepared_dt, "rowid", before = "symbol")
@@ -361,7 +366,7 @@ splits <- data_prepared_dt_filter %>%
     time_series_split(
     date_var   = date,
     initial    = 252 * 2,
-    assess     = 21,
+    assess     = 25,
     cumulative = F
     )
 
@@ -410,7 +415,7 @@ resamples_kfold_short <- train_short %>% vfold_cv(v = 5)
 
 options(future.globals.maxSize = 1.3 * 1024^3)  # Set future size to fit memory 2.0 GiB
 
-parallel_start(1:6, .method = "future")
+parallel_start(1:4, .method = "future")
 
 parallel_stop()
 
@@ -492,7 +497,7 @@ f_meas(lgboost_winrate, actual_fact, pred_fact)
 conf_mat(lgboost_winrate, actual_fact, pred_fact)
 
 fcst_test_fit_lgb_tuned %>% 
-    filter(symbol == testing_symbol) %>% 
+    filter(symbol == "BDX") %>% 
   plot_modeltime_forecast(.conf_interval_show = F)
 
 # ** save tune results ----
@@ -610,7 +615,7 @@ model_spec_prophet_boost_tune <- prophet_boost(
     seasonality_weekly = F,
     seasonality_daily  = F,
     mtry              = tune(),
-    trees             = 400, # leave so it stabilizes the model
+    trees             = 800, # leave so it stabilizes the model
     #min_n             = tune(),
     tree_depth        = tune(),
     learn_rate        = tune(),
@@ -679,7 +684,7 @@ fcst_test_fit_prophet_boost_tuned <- modeltime_table(wflw_fit_prophet_boost_tune
 
 prophet_winrate <- fcst_test_fit_prophet_boost_tuned %>%
     winrate(model = "prophet_xgb")
-# 
+ 
 # fcst_test_fit_prophet_boost_tuned %>% plot_fcst(scales = "free_y")
 
 prophet_winrate[,.(total_wins = sum(win), winrate = mean(win), gainers = mean(actual_gain), lift = mean(win)/mean(actual_gain))]
@@ -769,7 +774,7 @@ f_meas(glmnet_winrate, actual_fact, pred_fact)
 conf_mat(glmnet_winrate, actual_fact, pred_fact)
 
 fcst_test_fit_glmnet_tuned %>% 
-    filter(symbol == testing_symbol) %>% 
+    filter(symbol == "CIEN") %>% 
     plot_modeltime_forecast(.conf_interval_show = F)
 
 # calibrate_and_plot(wflw_fit_glmnet_tuned, plot =F)
@@ -788,14 +793,14 @@ gc()
 
 # ** Model spec ----
 model_spec_catboost <- boost_tree("regression",
-                                  trees  = 3000
+                                  trees  = 4000
                                   #,tree_depth = 5
                                   #,min_n = 20
                                   #,mtry = 5
                                 ) %>% 
-    set_engine('catboost',
-               early_stopping_rounds = 20, 
-               boosting_type = "Plain") 
+    set_engine('catboost'
+               , early_stopping_rounds = 20
+               , thread_count = 6) 
 
 wflw_spec_catboost <- workflow() %>% 
     add_model(model_spec_catboost) %>% 
@@ -921,6 +926,7 @@ fcst_test_fit_nnet %>%
 
 # * Modeling explanation ----
 
+# ** Feature importance ----
 extract_fit_engine(wflw_fit_xgboost_tuned) %>%
   xgboost::xgb.importance(model = .) %>%
   as_tibble() %>% View()
@@ -1021,7 +1027,7 @@ df_explain  <- bake(
     select(all_of(fit[["preproc"]][["x_names"]]))
 
 shap_values <- extract_fit_engine(wflw_fit_lgb_tuned) %>% 
-  shapviz(X_pred = data.matrix(df_explain %>% select(-date)), 
+  shapviz(X_pred = data.matrix(df_explain), 
           X = df_explain)
 
 # SHAP importance
@@ -1144,9 +1150,9 @@ calibration_tbl <- submodels_tbl %>%
     modeltime_calibrate(testing(splits), id = "symbol")
 
 # * Accuracy ----
-calibration_tbl %>% 
+calibration_accuracy <- calibration_tbl %>% 
     modeltime_accuracy(metric_set = extended_forecast_accuracy_metric_set()) %>% 
-    mutate(synth_acc = rmse*rsq) %>% 
+    mutate(synth_acc = sqrt(1/rmse*rsq)) %>%
     arrange(rmse)
 
 # * Accuracy summary plot ----
@@ -1167,11 +1173,12 @@ acc_by_symbol <- calibration_tbl %>%
                        metric_set = extended_forecast_accuracy_metric_set()) %>% 
     select(-.type) %>% 
     pivot_longer(-(.model_id:symbol)) %>% 
-    group_by(symbol, name) %>%
-    summarise(value = mean(value)) %>% 
-    ungroup() %>% 
+    #group_by(symbol, name) %>%
+    summarise(value = mean(value),
+              .by= c(symbol, name)) %>% 
+    #ungroup() %>% 
     pivot_wider(names_from = name, values_from = value) %>% 
-    mutate(synth_acc = rmse*rsq)
+    mutate(synth_acc = sqrt(1/rmse*rsq))
 
 write_rds(acc_by_symbol, str_glue("02_models/{today()}_acc_by_symbol.rds"))
 
@@ -1190,7 +1197,7 @@ forecast_symbols <- acc_by_symbol %>%
 gc()
 forecast_test <- calibration_tbl %>% 
     modeltime_forecast(
-        new_data   = testing(splits),
+        new_data    = testing(splits),
         actual_data = data_prepared_dt_filter,
         keep_data  = T, # keeps the grouping variable and base data
         conf_by_id = T) 
@@ -1199,21 +1206,21 @@ forecast_test <- calibration_tbl %>%
 back_fcst <- calibration_tbl %>% 
     modeltime_forecast(
         new_data = data_prepared_dt_filter %>% 
-            filter(date %between% c("2025-12-01","2025-12-10")) %>% 
+            filter(date %between% c("2026-02-01","2026-02-15")) %>% 
             drop_na(),
         actual_data = data_prepared_dt_filter %>% 
-            filter(date %between% c("2025-11-01","2025-12-10")) %>% 
+            filter(date %between% c("2026-02-01","2026-02-15")) %>% 
             drop_na(),
         keep_data = T,
         conf_by_id = T
     ) 
 
 back_fcst %>% 
-    filter(date == "2025-12-08" & .key == "prediction") %>% 
+    filter(date == "2026-02-11" & .key == "prediction") %>% 
     arrange(desc(.value))
 
 backtest <- back_fcst %>% 
-    filter(date >= "2025-12-01") %>% 
+    filter(date >= "2026-02-01") %>% 
     select(symbol, .value, .model_desc, date) %>% 
     pivot_wider(names_from = .model_desc, values_from = .value, 
                 names_repair = "universal") %>%
@@ -1318,7 +1325,8 @@ model_tbl_tuned_resamples %>%
 
 # 7.0 ENSEMBLE PANEL MODELS -----
 
-# * Average Ensemble ----
+# * Average Ensemble (SKIP) ----
+# the plain average ensemble does not show great accuracy or rsq improvments and takes a ton of memory: skip this
 # submodels_ids_to_keep <- c(1:5)
 
 ensemble_fit <- calibration_tbl %>%
@@ -1326,7 +1334,7 @@ ensemble_fit <- calibration_tbl %>%
 
 model_ensemble_tbl <- modeltime_table(ensemble_fit)
 
-# * Accuracy ----
+# * Avg ensemble Accuracy (skip) ----
 model_ensemble_tbl %>% 
   modeltime_accuracy(testing(splits),
                      metric_set = extended_forecast_accuracy_metric_set())
@@ -1335,12 +1343,13 @@ model_ensemble_tbl %>%
 # * Weighted ensemble ----
 loadings_tbl <- submodels_tbl %>% 
     # filter(.model_id %in% submodels_ids_to_keep) %>%
-    filter(.model_id != 5) %>%
+    # filter(.model_id != 5) %>%
     modeltime_accuracy(testing(splits)) %>%
-    mutate(rank = min_rank(-rmse))
+    mutate(synth_acc = sqrt(1/rmse*rsq),
+           rank = min_rank(synth_acc))
 
 ensemble_fit_wt <- submodels_tbl %>%
-    filter(.model_id != 5) %>%
+    #filter(.model_id != 5) %>%
   ensemble_weighted(loadings = loadings_tbl$rank)
 
 ensemble_fit_wt$fit$loadings_tbl
@@ -1349,14 +1358,14 @@ model_ensemble_tbl_wt <- modeltime_table(ensemble_fit_wt)
 
 # write_rds(model_ensemble_tbl_wt, "02_models/model_ensemble_tbl_wt.rds")
 
-# * Calibrate ensemble ----
+# * Calibrate and test ensemble accuracy ----
 
 model_ensemble_tbl_wt %>% 
     modeltime_calibrate(testing(splits),id = "symbol") %>%
     modeltime_accuracy(testing(splits), 
                      metric_set = extended_forecast_accuracy_metric_set())
 
-# write_rds(model_ensemble_tbl, 
+# write_rds(model_ensemble_tbl_wt, 
 #           str_glue("02_models/{today()}_model_ensemble_tbl.rds"),
 #           compress = "gz")
 
@@ -1407,7 +1416,7 @@ forecast_ensemble_test_tbl %>%
 # 9.0 Final Forecasting ----
 # * Refit ----
 data_prepared_clean_dt <- data_prepared_dt_filter %>% 
-    filter_by_time(date, .start = max(date)-years(2)) %>% 
+    filter_by_time(date, .start = train_date) %>% #max(date)-years(2)
     filter(symbol %in% forecast_symbols) %>% 
     #droplevels() %>% 
     drop_na()
@@ -1458,7 +1467,8 @@ model_ensemble_final_forecast %>%
     slice_min(rmse, n = 30) %>% 
     #filter(rmse < 0.07) %>% 
     #slice_max(value, n = 30) %>% 
-    arrange(desc(.value))
+    arrange(desc(.value)) %>% 
+    View()
 
 # * Turn OFF Parallel Backend ----
 plan(sequential)
