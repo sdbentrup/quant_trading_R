@@ -23,21 +23,29 @@ library(plotly)
 model_ensemble_final_forecast <-readRDS("01_save_data/01_saved_forecasts/2026-05-27_model_ensemble_final_forecast.rds")
 acc_by_symbol <- readRDS("02_models/2026-05-27_acc_by_symbol.rds")
 
-
-forecast_acc_sybmol <- model_ensemble_final_forecast %>% 
-    filter(date == max(date)) %>% 
-    merge(acc_by_symbol) %>% 
-    #filter(.value >= 0.006) %>% 
-    mutate(ev = (1-rmse) * .value) 
+forecast_acc_symbol <- model_ensemble_final_forecast %>% 
+    #filter(date == max(date)) %>% 
+    merge(acc_by_symbol)
 
 # select the top n stocks
-stock_picks <- forecast_acc_sybmol %>% 
+# select by mean prediction?
+stock_picks <- forecast_acc_symbol %>% 
+    filter(.key == 'prediction') %>% 
+    summarise(mean_pred = mean(.value), .by = symbol) %>% 
+    arrange(desc(mean_pred)) %>% 
+    merge(acc_by_symbol) %>% 
+    #filter(.value >= 0.006) %>% 
+    mutate(ev = (1-rmse) * mean_pred) %>% 
+    slice_max(ev, n = 10) %>% 
+    pull(symbol) 
+
+# or by last prediction?
+stock_picks <- forecast_acc_symbol %>% 
   filter(date == max(date) & .value > 0) %>% 
     #slice_min(rmse, n = 80) %>%
     slice_max(.value, n = 10) %>%
     #select(symbol, date, .value, rmse, rsq, ev)
-    pull(symbol) %>% 
-    as.character()
+    pull(symbol)
 
 # get price data for top stocks ----
 prices <- tq_get(stock_picks, from = today()-years(4))
@@ -73,7 +81,7 @@ returns %>%
                returns_col  = close_ret,
                #weights      = wts,
                col_rename   = "investment.growth",
-               wealth.index = TRUE) %>%
+               wealth.index = T) %>%
   mutate(investment.growth = investment.growth * 10000) %>% 
   plot_ly(x = ~date, y = ~investment.growth, type = "scatter", mode = "lines") 
 
@@ -82,6 +90,12 @@ returns %>%
   tq_performance(Ra = close_ret,
                  performance_fun = SharpeRatio,
                  Rf = 0.04/12)
+
+returns %>% 
+    tq_performance(Ra = close_ret,
+                   performance_fun = SharpeRatio,
+                   Rf = 0.04/12)
+
 # optimize current portfolio risk parity ----
 
 # * setup optimization ----
@@ -112,7 +126,7 @@ port_opt_rebal <- optimize.portfolio.rebalancing(returns_xts,
                                                  rebalance_on = "months",
                                                  # training_period = 100 #since weekly data
                                                  #moving_window = 100 #since weekly data
-                                                 rolling_window = 6 # 2 years of weekly data
+                                                 rolling_window = 6 # N of monthly data
                                                  )
 
 port_opt <- optimize.portfolio(returns_xts,
@@ -146,7 +160,7 @@ wts.rebal <- wts.rebal[complete.cases(wts.rebal),]
 # Compute cumulative returns of portfolio 
 CSM <- Return.rebalancing(returns_xts, wts.rebal) 
 backtest.plot(wts.rebal)
-
+backtest.plot(wts.rebal, plotType = 'cumRet')
 
 names(port_opt_rebal)
 names(port_opt_rebal$opt_rebalancing)
@@ -164,8 +178,8 @@ chart.RiskReward(port_opt,
                  chart.assets = T)
 
 barplot(extractWeights(port_opt), 
-        main="Optimal Portfolio Asset Allocation", 
-        col=rainbow(length(extractWeights(port_opt))))
+        main ="Optimal Portfolio Asset Allocation", 
+        col  =rainbow(length(extractWeights(port_opt)), alpha = 0.7))
 
 # set optimal weights ----
 opt_weights <- extractWeights(port_opt) %>%
@@ -194,7 +208,8 @@ port_weights_tbl %>%
   plot_time_series(.date_var = date,
                    .value = weight,
                    .color_var = symbol,
-                   .smooth = F)
+                   .smooth = F,
+                   .line_alpha = 0.7)
 
 port_weights_tbl %>%
   filter(date == max(date)) %>%
