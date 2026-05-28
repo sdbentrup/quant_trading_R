@@ -133,7 +133,7 @@ exclude_symbols <- c("TSLA","PLTR")
 sp500_symbols <- sp500 %>% 
     filter(symbol != "-" & !str_detect(company,"CL C")) %>% 
     filter(symbol %notin% exclude_symbols) %>% 
-    slice_max(weight, n = 320) %>%
+    slice_max(weight, n = 350) %>%
     # slice_sample(prop = 0.1) %>%
     arrange(symbol) %>% 
     pull(symbol) 
@@ -1187,8 +1187,8 @@ write_rds(acc_by_symbol, str_glue("02_models/{today()}_acc_by_symbol.rds"))
 # can do either a fixed n or a percentage
 
 forecast_symbols <- acc_by_symbol %>% 
-    slice_min(rmse, n = 100) %>%
-    #slice_min(rmse, prop = 0.4) %>%
+    # slice_min(rmse, n = 100) %>%
+    slice_min(rmse, prop = 0.3) %>%
     droplevels() %>% 
     arrange(symbol) %>% 
     pull(symbol)
@@ -1247,7 +1247,7 @@ forecast_test %>%
     group_by(symbol) %>%
     # filter(symbol == "AAP") %>% 
     filter(symbol %in% c("NVDA","GE","AMGN","AMP","CTAS","WELL","MSFT","MMM","IRM","ZTS")) %>%
-    filter(.index >= "2025-08-01") %>% 
+    filter(.index >= "2025-09-01") %>% 
     plot_modeltime_forecast(
         .facet_ncol = 2,
         .conf_interval_show = F,
