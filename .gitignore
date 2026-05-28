@@ -1,0 +1,25 @@
+# Ignore data folders
+/data/
+/01_save_data/
+/02_models/
+/03_actions/
+/98_archive/
+/99_testing/
+/catboost_info/
+/raw/
+/output/
+
+# Ignore R data files
+*.rds
+*.RData
+
+# Ignore RStudio noise
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+.Renviron
+.positai/
+
+# Keep everything else
+
