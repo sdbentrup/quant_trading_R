@@ -299,7 +299,7 @@ add_features <- function(prices_dt, price) {
   # Volume-based indicators
   # prices_dt[, Vol_ema_21_norm  := EMA(volume, n = 21) / volume]
   prices_dt[, Vol_roc_0_1      := ROC(volume, n = 1)] # leave this one for other calculations
-  prices_dt[, Vol_roc_0_1_rolling_std_63 := frollsd(Vol_roc_0_1, 63, align = "right")]
+  prices_dt[, Vol_roc_0_1_std_63 := frollsd(Vol_roc_0_1, 63, align = "right")]
   
   # create indicators based on VWAP
   prices_dt[, Vol_WAP           := VWAP(price_col, volume)] # only used for ratios, then dropped
@@ -3782,3 +3782,61 @@ model_ensemble_final_forecast %>%
 write_rds(model_ensemble_final_forecast,
           str_glue("01_save_data/01_saved_forecasts/{today()}_model_ensemble_final_forecast.rds"))
 
+
+
+# Testing for the tidymodels forecasting ----
+# instead of stacking can we estimate the model accuracy each from the augment()
+# use these weights to then estimate the forecast?
+
+# acc on testing
+lgb_test <- augment(wflw_fit_lgb_tuned, test) %>% mutate(model = "lightgbm") %>% select(symbol, model, date, .pred, actual = Return_fwd_21)
+xgb_test <- augment(wflw_fit_xgboost_tuned, test) %>% mutate(model = "xgboost") %>% select(symbol, model, date, .pred, actual = Return_fwd_21)
+cb_test  <- augment(wflw_fit_catboost, test) %>% mutate(model = "catboost") %>% select(symbol, model, date, .pred, actual = Return_fwd_21)
+pb_test  <- augment(wflw_fit_prophet_boost_tuned, test) %>% mutate(model = "prophet_xgb") %>% select(symbol, model, date, .pred, actual = Return_fwd_21)
+glm_test <- augment(wflw_fit_glmnet_tuned, test) %>% mutate(model = "glmnet") %>% select(symbol, model, date, .pred, actual = Return_fwd_21)
+
+test_combined <- rbind(lgb_test
+                      ,xgb_test
+                      ,cb_test
+                      ,pb_test
+                      ,glm_test) %>% setDT()
+
+acc_by_symbol <- test_combined[,.(rmse = sqrt(mean((.pred-actual)^2))), keyby = symbol]
+
+acc_symbols <- acc_by_symbol %>% 
+    slice_min(rmse, prop = 0.6) %>% 
+    pull(symbol)
+
+# weighting
+winrates[,.(rate = mean(win),
+            total = sum(win),
+            gainers = mean(actual_gain), 
+            lift = mean(win)/mean(actual_gain)), 
+         keyby = model]
+
+weights <- test_combined[,.(rmse = sqrt(mean((.pred-actual)^2))), 
+              keyby = model][,weight := frank(-rmse)/sum(frank(rmse))]
+setorder(weights, rmse)
+print(weights)
+
+# combined forecasts
+lgb_fcst <- augment(wflw_fit_lgb_tuned, forecast_dt) %>% mutate(model = "lightgbm") %>% select(symbol, model, date, .pred)
+xgb_fcst <- augment(wflw_fit_xgboost_tuned, forecast_dt) %>% mutate(model = "xgboost") %>% select(symbol, model, date, .pred)
+cb_fcst  <- augment(wflw_fit_lgb_tuned, forecast_dt) %>% mutate(model = "catboost") %>% select(symbol, model, date, .pred)
+pb_fcst  <- augment(wflw_fit_lgb_tuned, forecast_dt) %>% mutate(model = "prophet_xgb") %>% select(symbol, model, date, .pred)
+glm_fcst <- augment(wflw_fit_lgb_tuned, forecast_dt) %>% mutate(model = "glmnet") %>% select(symbol, model, date, .pred)
+
+combined_fcst <- rbind(lgb_fcst, xgb_fcst, cb_fcst, pb_fcst, glm_fcst)
+combined_fcst %>% count(model)
+
+merge_fcst_weight      <- setDT(merge(combined_fcst, weights[,.(model, weight)]))
+combined_weighted_fcst <- merge_fcst_weight[,.(fcst = sum(.pred*weight)/sum(weight)),symbol]
+
+combined_weighted_fcst %>% 
+    filter(symbol %in% acc_symbols) %>% 
+    slice_max(fcst, n = 10)
+
+stock_picks            <- combined_weighted_fcst %>% 
+    filter(symbol %in% acc_symbols) %>% 
+    slice_max(fcst, n = 10) %>% 
+    pull(symbol)

@@ -60,8 +60,18 @@ stock_picks <- forecast_acc_sybmol %>%
     pull(symbol) %>% 
     as.character()
 
+stock_picks <- forecast_acc_symbol %>% 
+    filter(.key == 'prediction') %>% 
+    summarise(mean_pred = mean(.value), .by = symbol) %>% 
+    arrange(desc(mean_pred)) %>% 
+    merge(acc_by_symbol) %>% 
+    #filter(.value >= 0.006) %>% 
+    mutate(ev = (1-rmse) * mean_pred) %>% # expected value; not technically an ev but attempts to risk-adjust returns
+    slice_max(ev, n = 10) %>% 
+    pull(symbol)
+
 # IBrokers connection ----
-tws = twsConnect(port = 7496, clientId = 11) #paper trading port 7497; live 7496
+tws = twsConnect(port = 7497, clientId = 11) #paper trading port 7497; live 7496
 isConnected(tws)
 
 # Portfolio query ----
@@ -172,7 +182,7 @@ actions_table[,qty := fifelse(action == "BUY",
 
 actions_table[,":=" (
     limit_price = fifelse(action == "BUY", round(lastPrice * 1.20,2),0),
-    stop_price  = fifelse(action == "BUY", round(lastPrice * 0.93,2),0)
+    stop_price  = fifelse(action == "BUY", round(lastPrice * 0.92,2),0)
 )]
 
 # calculate the new value, for reference only
@@ -190,11 +200,13 @@ actions_table[action == "SELL",.(sum(unrealizedPNL*(qty/position)))]/sum(actions
 
 port_value-actions_table[,.(sum(new_mkt_value, na.rm = T))]
 
+actions_table[,.(sum(new_mkt_value))]-port[,.(sum(averageCost))]
+
 # orders ----
 # how to do with multiple contracts? for loop or lapply?
 # placeOrder(twsconn=tws, Contract=twsSTK("AAPL"), Order=twsOrder(reqIds(tws), "BUY", 10, "MKT"))
 
-# * Simple market order function
+# * Simple market order function ----
 order_function_mkt <- function(actions_table, tws) {
     # Ensure the table is a data.table
     setDT(actions_table)
@@ -214,7 +226,7 @@ order_function_mkt <- function(actions_table, tws) {
     }
 }
 
-# * Bracket order function
+# * Bracket order function ----
 order_function_bracket <- function(actions_table, tws) {
 
     for (i in 1:nrow(actions_table)) {
@@ -247,6 +259,7 @@ order_function_bracket <- function(actions_table, tws) {
                 action        = "SELL",
                 totalQuantity = qty,
                 orderType     = "LMT",
+                tif           = "GTC",
                 lmtPrice      = tp_price,
                 parentId      = parent_id,
                 transmit      = FALSE
@@ -258,6 +271,7 @@ order_function_bracket <- function(actions_table, tws) {
                 action        = "SELL",
                 totalQuantity = qty,
                 orderType     = "STP",
+                tif           = "GTC",
                 auxPrice      = sl_price,
                 parentId      = parent_id,
                 transmit      = TRUE   # last order transmits the whole bracket
@@ -280,7 +294,7 @@ order_function_bracket <- function(actions_table, tws) {
     }
 }
 
-# revised version without the loop call:
+# * revised version without the loop call ----
 order_function_dt <- function(actions_table, tws) {
     
     actions_table[, {
