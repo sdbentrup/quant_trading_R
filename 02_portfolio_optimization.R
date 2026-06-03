@@ -1,5 +1,5 @@
 # R Script for optimizing the portfolio mix for the trading system
-# resources:
+# resources ---- 
 # https://rossb34.github.io/PortfolioAnalyticsPresentation2017/
 # https://github.com/braverock/PortfolioAnalytics
 # https://cran.r-project.org/web/packages/PortfolioAnalytics/vignettes/robustCovMatForPA.pdf
@@ -35,17 +35,18 @@ stock_picks <- forecast_acc_symbol %>%
     arrange(desc(mean_pred)) %>% 
     merge(acc_by_symbol) %>% 
     #filter(.value >= 0.006) %>% 
-    mutate(ev = (1-rmse) * mean_pred) %>% 
+    mutate(ev = (1-rmse) * mean_pred) %>% # expected value; not technically an ev but attempts to risk-adjust returns
     slice_max(ev, n = 10) %>% 
     pull(symbol) 
 
 # or by last prediction?
-stock_picks <- forecast_acc_symbol %>% 
-  filter(date == max(date) & .value > 0) %>% 
-    #slice_min(rmse, n = 80) %>%
-    slice_max(.value, n = 10) %>%
-    #select(symbol, date, .value, rmse, rsq, ev)
-    pull(symbol)
+# this seems not to be as reliable as the average and ev method above
+# stock_picks <- forecast_acc_symbol %>% 
+#   filter(date == max(date) & .value > 0) %>% 
+#     #slice_min(rmse, n = 80) %>%
+#     slice_max(.value, n = 10) %>%
+#     #select(symbol, date, .value, rmse, rsq, ev)
+#     pull(symbol)
 
 # get price data for top stocks ----
 prices <- tq_get(stock_picks, from = today()-years(4))
@@ -94,6 +95,7 @@ returns %>%
 returns %>% 
     tq_performance(Ra = close_ret,
                    performance_fun = SharpeRatio,
+                   # performance_fun = CalmarRatio,
                    Rf = 0.04/12)
 
 # optimize current portfolio risk parity ----
@@ -102,7 +104,7 @@ returns %>%
 # global minimum variance long only portfolio
 port_spec <- portfolio.spec(assets = colnames(returns_xts))
 port_spec <- add.constraint(port_spec, type = "weight_sum", min_sum=0.99, max_sum=1.01)
-port_spec <- add.constraint(port_spec, type = "box", min = 0.05, max = 0.25)
+port_spec <- add.constraint(port_spec, type = "box", min = 0.04, max = 0.25)
 # port_spec <- add.constraint(portfolio = port_spec, type = "long_only") # only positive weights
 # port_spec <- add.constraint(portfolio = port_spec, type="transaction_cost", ptc=0.05/100)
 # port_spec <- add.objective(portfolio = port_spec, type = "risk", name = "StdDev")
@@ -213,7 +215,7 @@ port_weights_tbl %>%
 
 port_weights_tbl %>%
   filter(date == max(date)) %>%
-  mutate(value = weight*port_value) %>%
+  mutate(value = weight*31000) %>%
   arrange(desc(value))
 
 chart.Weights(port_opt)

@@ -53,7 +53,7 @@ library(shapviz)
 
 # * dates ----
 from <- today() - years(4)
-train_date <- today() - years(2)-months(6)
+train_date <- today() - years(2)#-months(6)
 testing_symbol <- 'AAPL'
 
 # not used
@@ -220,7 +220,7 @@ add_features <- function(prices_dt, price) {
     prices_dt[, Close_roc_0_1_std_63 := frollsd(Close_roc_0_1, 63, fill = NA, align = "right")]
     # prices_dt[, Close_natr_63      := ATR(prices_dt[,.(high, low, price_col)], n = 63)[,"atr"]/price_col]
     prices_dt[, Close_ATR_63       := ATR(prices_dt[,.(high, low, price_col)], n = 63)[,"atr"]]
-    prices_dt[, Close_RSI          := RSI(price_col, n = 14)]
+    prices_dt[, Close_RSI_trend    := RSI(price_col, n = 14)/RSI(price_col, n = 21)]
     # prices_dt[, Close_rsi_21       := RSI(price_col, n = 21)]
     prices_dt[, Close_cmo_28       := CMO(price_col, n = 28)]
     prices_dt[, Close_cmo_ma       := EMA(Close_cmo_28, n = 21)]
@@ -229,7 +229,7 @@ add_features <- function(prices_dt, price) {
     # prices_dt[, Close_rolling_std_126 := frollsd(price_col, 126, align = "right")]
     
     # prices_dt[, Close_SNR_21       := SNR(prices_dt[, .(high, low, price_col)], n = 21)]
-    prices_dt[, Close_rel_volatility := 100 - 100 / (1 + runSD(price_col, 10))]
+    prices_dt[, Close_rel_volatility := 100 - 100 / (1 + frollsd(price_col, n = 10, align = 'right'))]
     prices_dt[, Close_252_max_diff := price_col/frollmax(price_col, 252, align = 'right')]
     prices_dt[, Close_252_min_diff := price_col/frollmin(price_col, 252, align = 'right')]
     prices_dt[, Close_CCI          := CCI(prices_dt[, .(high, low, price_col)])]
@@ -263,7 +263,7 @@ add_features <- function(prices_dt, price) {
     # Volume-based indicators
     # prices_dt[, Vol_ema_21_norm  := EMA(volume, n = 21) / volume]
     prices_dt[, Vol_roc_0_1      := ROC(volume, n = 1)] # leave this one for other calculations
-    prices_dt[, Vol_roc_0_1_rolling_std_63 := frollsd(Vol_roc_0_1, 63, align = "right")]
+    prices_dt[, Vol_roc_0_1_std_63 := frollsd(Vol_roc_0_1, 63, align = "right")]
     
     # create indicators based on VWAP
     prices_dt[, Vol_WAP           := VWAP(price_col, volume)] # only used for ratios, then dropped
@@ -449,7 +449,7 @@ tune_results_lgb <- wflw_spec_lgb_tune %>%
     resamples = resamples_kfold_short,
     param_info = extract_parameter_set_dials(wflw_spec_lgb_tune) %>% 
       update(learn_rate  = learn_rate(range = c(0.05, 0.5), trans = NULL)
-             ,trees      = trees(range = c(200,3500))
+             ,trees      = trees(range = c(200,4000))
              ,mtry       = mtry_prop(range = c(0.1,0.9))
       ),
     grid = 10,
