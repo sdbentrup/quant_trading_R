@@ -74,7 +74,11 @@ stock_picks <- forecast_acc_symbol %>%
 
 # IBrokers connection ----
 # requires an open trader workstation and an active api connection
+<<<<<<< HEAD
 tws = twsConnect(port = 7497, clientId = 11) # paper trading port 7497; live 7496
+=======
+tws = twsConnect(port = 7497, clientId = 12) # paper trading port 7497; live 7496
+>>>>>>> b1336bfd8890315fc442962696435bb810e44de5
 isConnected(tws)
 
 # Portfolio query ----
