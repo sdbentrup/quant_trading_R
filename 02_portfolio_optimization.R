@@ -19,25 +19,30 @@ library(plotly)
 # library(RobStatTM)
 # library(GSE)
 
+options(scipen = 99)
 # import data from saved data ----
-model_ensemble_final_forecast <-readRDS("01_save_data/01_saved_forecasts/2026-05-27_model_ensemble_final_forecast.rds")
-acc_by_symbol <- readRDS("02_models/2026-05-27_acc_by_symbol.rds")
+model_ensemble_final_forecast <-readRDS("01_save_data/01_saved_forecasts/2026-07-31_model_ensemble_final_forecast.rds")
+acc_by_symbol <- readRDS("02_models/2026-07-31_acc_by_symbol.rds")
 
 forecast_acc_symbol <- model_ensemble_final_forecast %>% 
     #filter(date == max(date)) %>% 
     merge(acc_by_symbol)
 
-# select the top n stocks
+# * select the top n stocks ----
 # select by mean prediction?
-stock_picks <- forecast_acc_symbol %>% 
+pred_avg <- forecast_acc_symbol %>% 
     filter(.key == 'prediction') %>% 
     summarise(mean_pred = mean(.value), .by = symbol) %>% 
     arrange(desc(mean_pred)) %>% 
-    merge(acc_by_symbol) %>% 
+    merge(acc_by_symbol)  
     #filter(.value >= 0.006) %>% 
-    mutate(ev = (1-rmse) * mean_pred) %>% # expected value; not technically an ev but attempts to risk-adjust returns
-    slice_max(ev, n = 10) %>% 
-    pull(symbol) 
+    # mutate(ev = (1-rmse) * mean_pred) %>% # expected value; not technically an ev but attempts to risk-adjust returns
+    # slice_max(ev, n = 10) 
+
+stock_picks <- pred_avg %>% 
+    slice_max(mean_pred, n = 10) %>% 
+    arrange(symbol) |> 
+    pull(symbol)
 
 # or by last prediction?
 # this seems not to be as reliable as the average and ev method above
@@ -47,6 +52,22 @@ stock_picks <- forecast_acc_symbol %>%
 #     slice_max(.value, n = 10) %>%
 #     #select(symbol, date, .value, rmse, rsq, ev)
 #     pull(symbol)
+
+stock_picks <- forecast_acc_symbol %>%
+  # filter(date == max(date) & .value > 0) %>%
+    slice_min(synth_acc, n = 80) %>%
+    slice_max(.value, n = 10) %>%
+    #select(symbol, date, .value, rmse, rsq, ev) |> 
+    arrange(symbol) |> 
+    pull(symbol)
+
+pred_avg |>
+    filter(mean_pred > 0.01) |> slice_min(rmse, n = 30) |>
+    # slice_max(synth_acc, n = 10) %>%
+    slice_max(mean_pred, n = 10) %>%
+    #select(symbol, date, .value, rmse, rsq, ev) |>
+    arrange(symbol) |>
+    pull(symbol)
 
 # get price data for top stocks ----
 prices <- tq_get(stock_picks, from = today()-years(4))
@@ -96,7 +117,8 @@ returns %>%
     tq_performance(Ra = close_ret,
                    performance_fun = SharpeRatio,
                    # performance_fun = CalmarRatio,
-                   Rf = 0.04/12)
+                   Rf = 0.04/12
+                   )
 
 # optimize current portfolio risk parity ----
 
@@ -104,7 +126,7 @@ returns %>%
 # global minimum variance long only portfolio
 port_spec <- portfolio.spec(assets = colnames(returns_xts))
 port_spec <- add.constraint(port_spec, type = "weight_sum", min_sum=0.99, max_sum=1.01)
-port_spec <- add.constraint(port_spec, type = "box", min = 0.04, max = 0.25)
+port_spec <- add.constraint(port_spec, type = "box", min = 0.04, max = 0.22)
 # port_spec <- add.constraint(portfolio = port_spec, type = "long_only") # only positive weights
 # port_spec <- add.constraint(portfolio = port_spec, type="transaction_cost", ptc=0.05/100)
 # port_spec <- add.objective(portfolio = port_spec, type = "risk", name = "StdDev")
@@ -117,7 +139,7 @@ port_spec <- add.objective(port_spec, type = "risk_budget", name = "ES", min_con
 
 # * optimize portfolio ----
 
-registerDoParallel(cores = 6)
+doParallel::registerDoParallel(cores = 6)
 port_opt_rebal <- optimize.portfolio.rebalancing(returns_xts,
                                                  portfolio = port_spec,
                                                  # optimize_method = "DEoptim",trace = T,traceDE=10,
@@ -134,8 +156,8 @@ port_opt_rebal <- optimize.portfolio.rebalancing(returns_xts,
 port_opt <- optimize.portfolio(returns_xts,
                                portfolio = port_spec,
                                #rp = sp500_rp,
-                               # optimize_method = "CVXR",
-                               optimize_method = "ROI",
+                               optimize_method = "CVXR",
+                               # optimize_method = "ROI",
                                # optimize_method = "DEoptim", traceDE=10,
                                # search_size = 20000,
                                #, "random", "ROI", "ROI_old", "pso", "GenSA","CVXR"
@@ -147,6 +169,8 @@ port_opt <- optimize.portfolio(returns_xts,
 
 
 stopImplicitCluster()
+
+# * review optimization ----
 port_opt
 port_opt_rebal
 
@@ -225,11 +249,54 @@ chart.RiskReward(port_opt,
                  return.col = "mean",
                  chart.assets = T)
 
+# create baseline comparisons ----
+# SPDR SP500 as baseline
+# add MMM as a second baseline since this is what I would have invested in otherwise
+# filter_date <- "2017-01-01"
+
+sp <- tq_get("^GSPC", from = today()-years(4))
+
+sp_returns <- sp %>%
+    tq_transmute(select = adjusted,
+                 mutate_fun = periodReturn,
+                 period = 'monthly',
+                 col_rename = "return_month") %>%
+    ungroup()
+
+sp_returns_monthly_xts <- sp_returns %>%
+    #filter(date >= filter_date) %>%
+    rename("GSPC" = "return_month") %>% 
+    as.xts()
+
 # unweighted portfolio returns
+market_base <- Return.portfolio(sp_returns_monthly_xts)
+table.AnnualizedReturns(market_base)
+
+# mmm returns
+mmm <- tq_get("MMM", from = today()-years(4))
+
+mmm_returns <- mmm %>%
+    tq_transmute(select = adjusted,
+                 mutate_fun = periodReturn,
+                 period = 'monthly',
+                 col_rename = "return_month") %>%
+    ungroup()
+
+mmm_returns_monthly_xts <- mmm_returns %>%
+    #filter(date >= filter_date) %>%
+    rename("MMM" = "return_month") %>% 
+    as.xts()
+
+# unweighted returns
+mmm_base <- Return.portfolio(mmm_returns_monthly_xts)
+table.AnnualizedReturns(mmm_base)
+
+# view returns from optimizing ----
+
+# unweighted returns from portfolio
 port_base_return <- Return.portfolio(returns_xts)
 table.AnnualizedReturns(port_base_return)
 
-# adjusted portfolio returns with optimal weights
 port_returns <- Return.portfolio(returns_xts,
                                  weights = extractWeights(port_opt))
 port_returns_rebal <- Return.portfolio(returns_xts,
@@ -238,10 +305,25 @@ port_returns_rebal <- Return.portfolio(returns_xts,
 table.AnnualizedReturns(port_returns)
 charts.PerformanceSummary(port_returns)
 
-ports <- cbind(port_base_return, port_returns, port_returns_rebal) #,port_port_returns_ma,
-colnames(ports) <- c("base","optimized","rebalancing") #"ma_test",
+ports <- cbind(market_base,
+               mmm_base,
+               port_base_return, 
+               port_returns, 
+               port_returns_rebal) #,port_port_returns_ma,
+colnames(ports) <- c("SP500","MMM","base","optimized","rebalancing") #"ma_test",
 table.AnnualizedReturns(ports, Rf = 0.05/12)
 charts.PerformanceSummary(ports, Rf = 0.05/12)
+
+# portfolio returns with weights
+returns %>% 
+    tq_portfolio(assets_col   = symbol,
+                 returns_col  = close_ret,
+                 weights      = opt_weights,
+                 col_rename   = "investment.growth",
+                 wealth.index = T) %>%
+    mutate(investment.growth = investment.growth * 10000) %>% 
+    plot_ly(x = ~date, y = ~investment.growth, type = "scatter", mode = "lines") 
+
 
 # save portfolio optimization ----
 write_rds(port_opt,str_glue("01_save_data/02_portfolios/{today()}_port_opt.rds"))

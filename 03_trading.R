@@ -146,7 +146,7 @@ stocks_table <- copy(final_prices)
 
 # CREATE function for equal weighting or weighting from optimization?
 
-# ** OPTION 1  equal weight ----
+# ** OPTION 1 equal weight ----
 stocks_table[,target_shares := round((port_value/length(stock_picks))/lastPrice)]
 stocks_table[,.(value = lastPrice*target_shares)]
 
@@ -235,7 +235,8 @@ order_function_mkt <- function(actions_table, tws) {
 }
 
 # * Bracket order function ----
-# adds logging of the ID
+# includes logging of the order ID for future canceling of the stop and limit orders if they do not execute
+
 order_function_bracket <- function(actions_table, tws) {
     
     for (i in 1:nrow(actions_table)) {

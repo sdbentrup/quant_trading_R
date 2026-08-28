@@ -29,7 +29,7 @@ library(bonsai)
 library(tictoc)
 library(future)
 library(future.apply)
-library(doFuture)
+# library(doFuture)
 # library(future.mirai)
 
 # Core 
@@ -52,8 +52,9 @@ library(xts)
 library(shapviz)
 
 # * dates ----
-from <- today() - years(4)
-train_date <- today() - years(2)#-months(6)
+from       <- today() - years(4)
+train_date <- today() - years(2) - months(6)
+valid_date <- today() - days(60)
 testing_symbol <- 'AAPL'
 
 # not used
@@ -63,7 +64,7 @@ testing_symbol <- 'AAPL'
 calibrate_and_plot <- function(..., type = 'testing', plot = T){
     
     if (type == 'testing'){
-        new_data = testing(split)
+        new_data = test
     } else {
         new_data = training(split)
     }
@@ -133,7 +134,7 @@ exclude_symbols <- c("TSLA","PLTR")
 sp500_symbols <- sp500 %>% 
     filter(symbol != "-" & !str_detect(company,"CL C")) %>% 
     filter(symbol %notin% exclude_symbols) %>% 
-    slice_max(weight, n = 350) %>%
+    slice_max(weight, n = 380) %>% # this is approximately 97% of the weight of the S&P 500
     # slice_sample(prop = 0.1) %>%
     arrange(symbol) %>% 
     pull(symbol) 
@@ -359,8 +360,12 @@ setcolorder(data_prepared_dt, "rowid", before = "symbol")
 # * Split into train and forecast sets ----
 forecast_dt <- data_prepared_dt[is.na(Return_fwd_21)]
 
+valid_dt    <- data_prepared_dt[!is.na(Return_fwd_21) & 
+                                      date >= valid_date,]
+
 data_prepared_dt_filter <- data_prepared_dt[!is.na(Return_fwd_21) & 
-                                                date >= train_date,]
+                                                date >= train_date &
+                                                date < valid_date,]
 
 set.seed(123)
 split <- initial_split(data_prepared_dt_filter, prop = 0.8, strata = symbol)
@@ -466,20 +471,24 @@ tune_results_lgb %>%
 
 wflw_fit_lgb_tuned <- wflw_spec_lgb_tune %>% 
   finalize_workflow(select_best(tune_results_lgb, metric = "rmse")) %>% 
-  fit(training(split))
+  fit(train)
 
 # ** testing accuracy ----
-augment(wflw_fit_lgb_tuned,testing(split)) %>% 
+augment(wflw_fit_lgb_tuned, test) %>% 
     mutate(error = .pred-Return_fwd_21) %>% 
     summarise(rmse = sqrt(mean(error^2)))
 
-augment(wflw_fit_lgb_tuned,testing(split)) %>% 
+augment(wflw_fit_lgb_tuned, test) %>% 
     rsq(.pred, Return_fwd_21)
 
+augment(wflw_fit_lgb_tuned, valid_dt) %>% 
+    rmse(.pred, Return_fwd_21)
+
 fcst_test_fit_lgb_tuned <- modeltime_table(wflw_fit_lgb_tuned) %>% 
-    modeltime_calibrate(new_data = testing(split), id = "symbol") %>% 
+    modeltime_calibrate(new_data = test, id = "symbol") %>% 
     modeltime_forecast(actual_data = data_prepared_dt_filter, 
-                       new_data    = testing(split),
+                       # new_data   = test,
+                       new_data    = valid_dt,
                        keep_data   = T,
                        conf_by_id  = T)
 
@@ -493,7 +502,7 @@ f_meas(lgboost_winrate, actual_fact, pred_fact)
 conf_mat(lgboost_winrate, actual_fact, pred_fact)
 
 fcst_test_fit_lgb_tuned %>% 
-    filter(symbol == testing_symbol) %>% 
+    filter(symbol == 'ZTS') %>% 
   plot_modeltime_forecast(.conf_interval_show = F)
 
 augment(wflw_fit_lgb_tuned,forecast_dt) %>% 
@@ -570,17 +579,17 @@ end <- Sys.time()
 end-start
 
 # ** test accuracy ----
-augment(wflw_fit_xgboost_tuned,testing(split)) %>% 
+augment(wflw_fit_xgboost_tuned,test) %>% 
     mutate(error = .pred-Return_fwd_21) %>% 
     summarise(rmse = sqrt(mean(error^2)))
 
-augment(wflw_fit_xgboost_tuned,testing(split)) %>% 
+augment(wflw_fit_xgboost_tuned,test) %>% 
     rsq(.pred, Return_fwd_21)
 
 fcst_test_fit_xgboost_tuned <- modeltime_table(wflw_fit_xgboost_tuned) %>% 
-    modeltime_calibrate(new_data = testing(split), id = "symbol") %>% 
+    modeltime_calibrate(new_data = test, id = "symbol") %>% 
     modeltime_forecast(actual_data = data_prepared_dt_filter, 
-                       new_data    = testing(split),
+                       new_data    = test,
                        keep_data   = T, 
                        conf_by_id  = T)
 
@@ -670,21 +679,21 @@ end <- Sys.time()
 end - start
 
 # ** testing accuracy ----
-augment(wflw_fit_prophet_boost_tuned,testing(split)) %>% 
+augment(wflw_fit_prophet_boost_tuned,test) %>% 
     mutate(error = .pred-Return_fwd_21) %>% 
     summarise(rmse = sqrt(mean(error^2)))
 
-augment(wflw_fit_prophet_boost_tuned,testing(split)) %>% 
+augment(wflw_fit_prophet_boost_tuned,test) %>% 
     rsq(.pred, Return_fwd_21)
 
 fcst_test_fit_prophet_boost_tuned <- modeltime_table(wflw_fit_prophet_boost_tuned) %>% 
-    modeltime_calibrate(new_data = testing(split), id = "symbol") %>% 
+    modeltime_calibrate(new_data = test, id = "symbol") %>% 
     modeltime_forecast(actual_data = data_prepared_dt_filter, 
-                       new_data = testing(split),
+                       new_data = test,
                        keep_data = T,
                        conf_by_id = T)
 
-fcst_test_fit_prophet_boost_tuned <- augment(wflw_fit_prophet_boost_tuned,testing(split))
+fcst_test_fit_prophet_boost_tuned <- augment(wflw_fit_prophet_boost_tuned,test)
 
 prophet_winrate <- fcst_test_fit_prophet_boost_tuned %>%
     winrate(model = "prophet_xgb")
@@ -772,17 +781,17 @@ wflw_fit_glmnet_tuned <- wflw_spec_glmnet_tune %>%
   fit(training(split))
 
 # ** test accuracy ----
-augment(wflw_fit_glmnet_tuned,testing(split)) %>% 
+augment(wflw_fit_glmnet_tuned,test) %>% 
     mutate(error = .pred-Return_fwd_21) %>% 
     summarise(rmse = sqrt(mean(error^2)))
 
-augment(wflw_fit_glmnet_tuned,testing(split)) %>% 
+augment(wflw_fit_glmnet_tuned,test) %>% 
     rsq(.pred, Return_fwd_21)
 
 fcst_test_fit_glmnet_tuned <- modeltime_table(wflw_fit_glmnet_tuned) %>% 
-    modeltime_calibrate(new_data = testing(split), id = "symbol") %>% 
+    modeltime_calibrate(new_data = test, id = "symbol") %>% 
     modeltime_forecast(actual_data = data_prepared_dt_filter, 
-                       new_data    = testing(split),
+                       new_data    = test,
                        keep_data   = T,
                        conf_by_id  = T)
 
@@ -849,17 +858,17 @@ extract_fit_engine(wflw_fit_catboost) %>%
 
 # ** test accuracy ----
 
-augment(wflw_fit_catboost,testing(split)) %>% 
+augment(wflw_fit_catboost,test) %>% 
     mutate(error = .pred-Return_fwd_21) %>% 
     summarise(rmse = sqrt(mean(error^2)))
 
-augment(wflw_fit_catboost,testing(split)) %>% 
+augment(wflw_fit_catboost,test) %>% 
     rsq(.pred, Return_fwd_21)
 
 fcst_test_fit_catboost <- modeltime_table(wflw_fit_catboost) %>% 
-    modeltime_calibrate(new_data = testing(split), id = "symbol") %>% 
+    modeltime_calibrate(new_data = test, id = "symbol") %>% 
     modeltime_forecast(actual_data = data_prepared_dt_filter, 
-                       new_data    = testing(split),
+                       new_data    = test,
                        keep_data   = T,
                        conf_by_id  = T)
 
@@ -917,18 +926,18 @@ end-start
 
 # ** accuracy on testing ----
 
-augment(wflw_fit_nnet, testing(split)) %>% 
+augment(wflw_fit_nnet, test) %>% 
     rmse(.pred, Return_fwd_21)
 
-augment(wflw_fit_nnet, testing(split)) %>% 
+augment(wflw_fit_nnet, test) %>% 
     rsq(.pred, Return_fwd_21)
 
 # calibrate_and_plot(wflw_fit_cb, plot = F)
 
 fcst_test_fit_nnet <- modeltime_table(wflw_fit_nnet) %>% 
-    modeltime_calibrate(new_data = testing(split), id = "symbol") %>% 
+    modeltime_calibrate(new_data = test, id = "symbol") %>% 
     modeltime_forecast(actual_data = data_prepared_dt_filter, 
-                       new_data    = testing(split),
+                       new_data    = test,
                        keep_data   = T,
                        conf_by_id  = T)
 
@@ -1169,7 +1178,7 @@ submodels_tbl <- modeltime_table(
 
 # * Calibration ----
 calibration_tbl <- submodels_tbl %>% 
-    modeltime_calibrate(testing(split), id = "symbol")
+    modeltime_calibrate(test, id = "symbol")
 
 # * Accuracy ----
 calibration_tbl %>% 
@@ -1218,7 +1227,7 @@ forecast_symbols <- acc_by_symbol %>%
 gc()
 forecast_test <- calibration_tbl %>% 
     modeltime_forecast(
-        new_data   = testing(split),
+        new_data   = test,
         actual_data = data_prepared_dt_filter,
         keep_data  = T, # keeps the grouping variable and base data
         conf_by_id = T) 
@@ -1356,7 +1365,7 @@ model_ensemble_tbl <- modeltime_table(ensemble_fit)
 
 # * Accuracy ----
 model_ensemble_tbl %>% 
-  modeltime_accuracy(testing(split),
+  modeltime_accuracy(test,
                      metric_set = extended_forecast_accuracy_metric_set())
 
 
@@ -1364,7 +1373,7 @@ model_ensemble_tbl %>%
 loadings_tbl <- submodels_tbl %>% 
     # filter(.model_id %in% submodels_ids_to_keep) %>%
     filter(.model_id != 5) %>%
-    modeltime_accuracy(testing(split)) %>%
+    modeltime_accuracy(test) %>%
     mutate(rank = min_rank(-rmse))
 
 ensemble_fit_wt <- submodels_tbl %>%
@@ -1380,8 +1389,8 @@ model_ensemble_tbl_wt <- modeltime_table(ensemble_fit_wt)
 # * Calibrate ensemble ----
 
 model_ensemble_tbl_wt %>% 
-    modeltime_calibrate(testing(split),id = "symbol") %>%
-    modeltime_accuracy(testing(split), 
+    modeltime_calibrate(test,id = "symbol") %>%
+    modeltime_accuracy(test, 
                      metric_set = extended_forecast_accuracy_metric_set())
 
 # write_rds(model_ensemble_tbl, 
@@ -1393,7 +1402,7 @@ model_ensemble_tbl_wt %>%
 gc()
 forecast_ensemble_test_tbl <- model_ensemble_tbl_wt %>% 
     modeltime_forecast(
-        new_data = testing(split),
+        new_data = test,
         actual_data = data_prepared_dt_filter,
         keep_data = T
     )
