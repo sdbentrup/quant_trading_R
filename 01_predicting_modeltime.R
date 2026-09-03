@@ -31,7 +31,7 @@ library(bonsai)
 library(tictoc)
 library(future)
 library(future.apply)
-library(doFuture)
+# library(doFuture)
 # library(future.mirai)
 
 # Core 
@@ -44,11 +44,11 @@ library(rstatix)
 # library(tidytable)
 
 # Modeling and stock analytics
-library(baguette)
+# library(baguette) # for bagged models https://baguette.tidymodels.org/
 library(PortfolioAnalytics)
 library(shapviz)
 library(ggthemes)
-library(rvest) # for read_html()
+# library(rvest) # for read_html()
 library(TTR)
 library(xts)
 library(shapviz)
@@ -333,13 +333,11 @@ write_rds(prices_features_dt, str_glue("01_save_data/{today()}_prices_features_d
 #rm(list=ls(pattern="^wflw_"))
 
 # 2.0 TIME TEST/TRAIN SPLIT ----
-# * clean for splitting ----
-# remove NA values, add fourier transform features, set order
-setorderv(prices_features_dt, c("symbol","date"))
-
 # * prepare final training data ----
-# add fourier lags
+# remove NA values, add fourier transform features, set order
 # filter to macd_long_trend since this has the most NAs in the past data
+
+setorderv(prices_features_dt, c("symbol","date"))
 
 data_prepared_dt <- prices_features_dt[!is.na(Close_macd_long_signal_trend),
                        select(.SD,
@@ -386,7 +384,7 @@ splits <- data_prepared_dt_filter %>%
     )
 
 set.seed(123)
-train_short <- training(splits) %>% slice_sample(prop = 0.5, by = symbol)
+train_short <- training(splits) %>% slice_sample(prop = 0.6, by = symbol)
 
 # * remove unneeded data from environment ----
 rm(prices_base)
@@ -420,11 +418,11 @@ recipe_spec <- recipe(Return_fwd_21 ~ ., data = training(splits)) %>%
 # 4.0 HYPERPARAMETER TUNING MODELS ---- 
 
 # * RESAMPLES - K-FOLD ----- 
-set.seed(69)
+set.seed(101)
 # resamples_kfold <- training(splits) %>% vfold_cv(v = 5)
-resamples_kfold_short <- train_short %>% vfold_cv(v = 5)
+resamples_kfold_short <- train_short %>% vfold_cv(v = 4)
 
-# * Parallel Processing ----
+# Parallel Processing ----
 # cl <- parallel::makeCluster(2, timeout = 60)
 # plan(cluster, workers = cl)
 
@@ -442,7 +440,7 @@ plan(sequential)
 
 model_spec_lgb_tune <- boost_tree(
   "regression",
-  mtry           = tune(),
+  # mtry           = tune(),
   trees          = tune(),
   min_n          = tune(),
   tree_depth     = tune(),
@@ -464,8 +462,8 @@ tune_results_lgb <- wflw_spec_lgb_tune %>%
     resamples = resamples_kfold_short,
     param_info = extract_parameter_set_dials(wflw_spec_lgb_tune) %>% 
       update(learn_rate  = learn_rate(range = c(0.05, 0.5), trans = NULL)
-             ,trees      = trees(range = c(200,4000))
-             ,mtry       = mtry_prop(range = c(0.1,0.9))
+             ,trees      = trees(range = c(300,4000))
+             # ,mtry       = mtry_prop(range = c(0.1,0.9))
       ),
     grid = 12,
     control = control_race(verbose = T, parallel_over = NULL)
@@ -490,10 +488,6 @@ wflw_fit_lgb_tuned <- wflw_spec_lgb_tune %>%
   fit(training(splits))
 
 # ** testing accuracy ----
-augment(wflw_fit_lgb_tuned,testing(splits)) %>% 
-    mutate(error = .pred-Return_fwd_21) %>% 
-    summarise(rmse = sqrt(mean(error^2)))
-
 augment(wflw_fit_lgb_tuned,testing(splits)) %>% 
    # rsq(.pred, Return_fwd_21)
     metrics(.pred, Return_fwd_21)
@@ -540,7 +534,7 @@ model_spec_xgboost_tune <- boost_tree(
     ) %>% 
     set_engine('xgboost', 
                counts      = F, 
-               nthread     =  -1, 
+               # nthread     =  -1, 
                tree_method = "hist",
                #objective   = "reg:pseudohubererror",
                validation  = 0.1)
@@ -560,7 +554,7 @@ tune_results_xgboost <- wflw_spec_xgboost_tune %>%
         # metrics    = metric_set( huber_loss, rmse,iic),
         param_info = extract_parameter_set_dials(wflw_spec_xgboost_tune) %>% 
           update(learn_rate = learn_rate(range = c(0.05, 0.5), trans = NULL)
-                 ,trees     = trees(range = c(200,3500))
+                 ,trees     = trees(range = c(300,3500))
                  ,mtry      = mtry_prop(range = c(0.1,0.9))
                  ),
         grid = 10,
@@ -631,7 +625,7 @@ model_spec_prophet_boost_tune <- prophet_boost(
     seasonality_weekly = F,
     seasonality_daily  = F,
     mtry              = tune(),
-    trees             = 800, # leave so it stabilizes the model
+    trees             = 500, # leave so it stabilizes the model
     #min_n             = tune(),
     tree_depth        = tune(),
     learn_rate        = tune(),
@@ -639,7 +633,7 @@ model_spec_prophet_boost_tune <- prophet_boost(
     stop_iter         = 30
 ) %>% set_engine("prophet_xgboost",  
                  counts = F, 
-                 nthread =  -1, 
+                 # nthread =  -1, 
                  tree_method = "hist"
                  ,validation = 0.1)
 
@@ -731,18 +725,21 @@ model_spec_glmnet_tune <- linear_reg(
 
 wflw_spec_glmnet_tune <- workflow() %>% 
   add_model(model_spec_glmnet_tune) %>% 
-  add_recipe(recipe_spec %>% 
-                 step_rm(date) %>% 
-                 step_ts_impute(all_numeric_predictors()))
+  add_recipe(recipe_spec |> 
+                 step_timeseries_signature(date) |>
+                 step_ns(date_index.num) |>
+                 step_rm(date_year:date_mday7) |>
+                 step_rm(date))# %>% 
+                 # step_ts_impute(all_numeric_predictors()))
 
 # ** Tuning
 set.seed(69)
 start <- Sys.time()
 tune_results_glmnet <- wflw_spec_glmnet_tune %>% 
     tune_race_anova(
-        # resamples = resamples_kfold,
+        # resamples = training(splits) %>% vfold_cv(v = 5),
         resamples = resamples_kfold_short,
-        grid      = 6,
+        grid      = 5,
         control   = control_race(verbose = T, parallel_over = NULL)
     )
 end <- Sys.time()
@@ -782,12 +779,12 @@ f_meas(glmnet_winrate, actual_fact, pred_fact)
 conf_mat(glmnet_winrate, actual_fact, pred_fact)
 
 fcst_test_fit_glmnet_tuned %>% 
-    filter(symbol == "AAPL") %>% 
+    filter(symbol == testing_symbol) %>% 
     plot_modeltime_forecast(.conf_interval_show = F)
 
 # calibrate_and_plot(wflw_fit_glmnet_tuned, plot =F)
 
-# save tune results
+# ** save tune results ----
 write_rds(tune_results_glmnet, "02_models/tune_results_glmnet.rds")
 rm(tune_results_glmnet)
 rm(wflw_spec_glmnet_tune) # remove spec to save memory
@@ -800,18 +797,20 @@ gc()
 # https://bonsai.tidymodels.org/reference/train_catboost.html
 
 # ** Tunable spec ----
-model_spec_catboost <- boost_tree("regression",
+model_spec_catboost_tune <- boost_tree("regression",
                                   trees       = tune()
-                                  ,tree_depth = tune()
+                                  # ,tree_depth = tune()
                                   ,learn_rate = tune()
+                                  # , mtry = tune()
                                   , stop_iter = 20
                                 ) %>% 
     set_engine('catboost'
                #, early_stopping_rounds = 20
-               , thread_count = 2) 
+               # , thread_count = 1
+               ) 
 
-wflw_spec_catboost <- workflow() %>% 
-    add_model(model_spec_catboost) %>% 
+wflw_spec_catboost_tune <- workflow() %>% 
+    add_model(model_spec_catboost_tune) %>% 
     add_recipe(recipe_spec %>% step_rm(date))
 
 # ** Tuning
@@ -820,13 +819,17 @@ start <- Sys.time()
 tune_results_catboost <- wflw_spec_catboost_tune %>% 
     tune_race_anova(
         resamples = resamples_kfold_short,
-        grid = 8,
-        control = control_race(verbose = T, parallel_over = NULL)
+        grid      = 5,
+        param_info = extract_parameter_set_dials(wflw_spec_catboost_tune) %>% 
+            update(learn_rate  = learn_rate(range = c(0.05, 0.5), trans = NULL)
+                   ,trees      = trees(range = c(500,3800))
+            ),
+        control   = control_race(verbose = T, parallel_over = NULL)
     )
 end <- Sys.time()
 end-start
 
-collect_metrics(wflw_fit_cb)
+collect_metrics(tune_results_catboost)
 
 # extract_fit_engine(wflw_fit_catboost) %>% 
 #     catboost::catboost.get_feature_importance(model = .) %>%
@@ -854,7 +857,7 @@ fcst_test_fit_catboost <- modeltime_table(wflw_fit_catboost_tuned) %>%
                        keep_data   = T,
                        conf_by_id  = T)
 
-catboost_winrate <- fcst_test_fit_catboost_tuned %>%
+catboost_winrate <- fcst_test_fit_catboost %>%
     winrate(model = "catboost") 
 
 catboost_winrate[,.(total_wins = sum(win), winrate = mean(win), gainers = mean(actual_gain), lift = mean(win)/mean(actual_gain))]
@@ -880,14 +883,14 @@ gc()
 
 # ** Model spec ----
 model_spec_nnet <- mlp(
-    hidden_units = 30,#40,
+    hidden_units = 10,
     #hidden_units = c(20,20), #try with multiple layers
-    epochs       = 500
+    epochs       = 700
 ) %>%
     # set_engine("nnet")
     set_engine("brulee", 
                validation = 0.1, # 10% holdout for early stopping
-               stop_iter  = 10
+               stop_iter  = 20
                ,rate_schedule = "cyclic"
     ) %>% 
     set_mode("regression")
@@ -932,6 +935,10 @@ conf_mat(nnet_winrate, actual_fact, pred_fact)
 fcst_test_fit_nnet %>% 
     filter(symbol == testing_symbol) %>% 
     plot_modeltime_forecast(.conf_interval_show = F)
+
+# ** save tune results ----
+rm(wflw_spec_nnet)
+gc()
 
 # * Modeling explanation ----
 
@@ -1137,14 +1144,16 @@ winrates <- rbindlist(l = list(lgboost_winrate,
                                prophet_winrate,
                                nnet_winrate))
 
-winrates[,.(rate = mean(win), total = sum(win), gainers = mean(actual_gain), lift = mean(win)/mean(actual_gain)), keyby = model]
+winrates[,.(rate = mean(win), total = sum(win), gainers = mean(actual_gain), 
+            lift = mean(win)/mean(actual_gain)), keyby = model] |> 
+    arrange(desc(lift))
 
 # * Model Table ----
 submodels_tbl <- modeltime_table(
     wflw_fit_xgboost_tuned
     ,wflw_fit_lgb_tuned
     ,wflw_fit_prophet_boost_tuned
-    ,wflw_fit_catboost_Tuned
+    ,wflw_fit_catboost_tuned
     ,wflw_fit_glmnet_tuned
     ,wflw_fit_nnet
 ) %>% 
@@ -1163,6 +1172,9 @@ calibration_accuracy <- calibration_tbl %>%
     modeltime_accuracy(metric_set = extended_forecast_accuracy_metric_set()) %>% 
     mutate(synth_acc = sqrt(1/rmse*rsq)) %>%
     arrange(rmse)
+
+calibration_accuracy |> 
+    table_modeltime_accuracy()
 
 # * Accuracy summary plot ----
 calibration_tbl %>% 
@@ -1352,15 +1364,18 @@ model_ensemble_tbl %>%
 # * Weighted ensemble ----
 loadings_tbl <- submodels_tbl %>% 
     # filter(.model_id %in% submodels_ids_to_keep) %>%
-    # filter(.model_id != 5) %>%
-    modeltime_accuracy(testing(splits)) %>%
-    mutate(synth_acc = sqrt(1/rmse*rsq),
-           share = synth_acc/sum(synth_acc),
-           rank = min_rank(synth_acc))
+    filter(.model_desc != "GLMNet - Tuned") %>%
+    modeltime_accuracy(testing(splits),
+                       metric_set = extended_forecast_accuracy_metric_set()) %>%
+    mutate(#synth_acc = sqrt(1/rmse*rsq),
+           #share = synth_acc/sum(synth_acc),
+           #rank = min_rank(synth_acc)
+        rank = min_rank(desc(maape))) # set to desc so that the lowest error gets the highest rank
 
 ensemble_fit_wt <- submodels_tbl %>%
     #filter(.model_id != 5) %>%
-  ensemble_weighted(loadings = loadings_tbl$rank)
+    filter(.model_desc != "GLMNet - Tuned") %>%
+    ensemble_weighted(loadings = loadings_tbl$rank)
     # ensemble_weighted(loadings = loadings_tbl$share)
 
 ensemble_fit_wt$fit$loadings_tbl

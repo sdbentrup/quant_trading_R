@@ -1,6 +1,10 @@
 # test catboost directly without tidymodels
 library(tidyverse)
 library(catboost)
+library(bonsai)
+library(future)
+library(modeltime)
+library(finetune)
 library(data.table)
 library(tidymodels)
 library(timetk)
@@ -174,13 +178,13 @@ cb_fcst_get <- forecast[date == max(date),.(symbol, date, predicted)]  %>%
     slice_max(predicted, n = 10) %>% 
     pull(symbol)
 
-# tidymodels with bonsai
+# tidymodels with bonsai ----
 library(bonsai)
 
 set.seed(121)
 start <- Sys.time()
 bonsai_fit_catboost <- boost_tree("regression",
-                                  trees  = 3500
+                                  # trees  = 3500
                                   #,tree_depth = 10
                                   #,learn_rate = 0.01
                                   #,mtry = 0.5
@@ -202,13 +206,15 @@ end-start
 
 # test with recipe
 model_spec_catboost <- boost_tree("regression",
-                                  trees  = 4000
+                                  trees  = 1500
+                                  , learn_rate = 0.316
                                   #,tree_depth = 5
                                   #,min_n = 20
                                   #,mtry = 5
-) %>% 
+                                  , stop_iter = 20
+                                  ) %>% 
     set_engine('catboost'
-               , early_stopping_rounds = 20
+               # , early_stopping_rounds = 20
                , thread_count = 6) 
 
 wflw_spec_catboost <- workflow() %>% 
@@ -218,18 +224,17 @@ wflw_spec_catboost <- workflow() %>%
 set.seed(69)
 start <- Sys.time()
 bonsai_fit_catboost <- wflw_spec_catboost  %>% 
-    fit(training(splits))
-#fit_resamples(resamples_kfold)
+    # fit(training(splits))
+    fit_resamples(resamples_kfold)
 end <- Sys.time()
 end-start
 
-# analysis of predictions 
-feat_imp <- catboost.get_feature_importance(extract_fit_engine(bonsai_fit_catboost)) %>% 
-    as_tibble(rownames = "Feature") %>% 
-    rename(Importance = V1) %>% 
-    mutate(Feature = fct_reorder(Feature, Importance,.desc = F))
+final_fit_catboost <- wflw_spec_catboost |> 
+    finalize_workflow(bonsai_fit_catboost |> select_best(metric = "rmse")) |> 
+    fit(training(splits))
 
-feat_imp %>% plot_ly(x = ~Importance, y = ~Feature, type = "bar", alpha = 0.8)
+# analysis of predictions 
+augment(final_fit_catboost, testing(splits)) %>% metrics(.pred, Return_fwd_21)
 
 augment(bonsai_fit_catboost, testing(splits)) %>% rmse(.pred, Return_fwd_21)
 augment(bonsai_fit_catboost, valid) %>% rsq(.pred, Return_fwd_21)
@@ -244,6 +249,13 @@ catboost_test_fit %>%
     filter(symbol == "AAPL") %>% 
     select(date,.pred,Return_fwd_21) %>% pivot_longer(-date) %>%  ggplot(aes(x = date,y = value, color = name))+geom_line()
 
+# importance
+feat_imp <- catboost.get_feature_importance(extract_fit_engine(final_fit_catboost)) %>% 
+    as_tibble(rownames = "Feature") %>% 
+    rename(Importance = V1) %>% 
+    mutate(Feature = fct_reorder(Feature, Importance,.desc = F))
+
+feat_imp %>% plot_ly(x = ~Importance, y = ~Feature, type = "bar", alpha = 0.8)
 
 # test model interpretation with IML
 library(iml)
@@ -265,3 +277,80 @@ ale$plot()
 
 pdp <- FeatureEffect$new(predictor, feature = "Close_252_min_diff", method = "pdp")
 plot(pdp)
+
+# test model tuning 
+
+data <- prices_features_dt[!is.na(Close_macd_long_signal_trend),
+                                       select(.SD,
+                                              -(open:adjusted),
+                                              -Return_fwd_5, -Return_fwd_10,
+                                              -contains("_lag_"),
+                                              -contains("_lead_"))] %>% 
+    group_by(symbol) %>%
+    tk_augment_fourier(date, .periods = c(252), .K = 1) %>%
+    ungroup() %>% 
+    # tk_augment_timeseries_signature(date) %>% 
+    # select(-matches("(.xts$)|(.iso$)|(.lbl$)|(.hour)|(.minute)|(.second)|(.am.pm)")) %>% 
+    # select(-index.num, -diff, -year) %>%  |> 
+    slice_sample(prop = 0.4, by = symbol) |> 
+    setDT()
+
+splits <- data %>% 
+    time_series_split(
+        date_var   = date,
+        initial    = round(252 * 2.4), # sets to a whole number, 2.4 years is the maximum in the data, more or less
+        assess     = 22,
+        cumulative = F
+    )
+
+set.seed(69)
+resamples_kfold <- training(splits) %>% vfold_cv(v = 4)
+
+
+recipe_spec <- recipe(Return_fwd_21 ~ ., data = training(splits)) %>%
+    # update_role(rowid, new_role = 'identifier') %>% 
+    step_dummy(all_nominal_predictors(), one_hot = T, keep_original_cols = F) %>%
+    step_interact(~Close_macd_long:Close_macd_short) %>% 
+    step_interact(~Close_macd_long_signal:Close_macd_short_signal) %>% 
+    step_filter_missing(all_predictors(), threshold = 0.2) %>% 
+    step_zv(all_predictors())
+
+model_spec_catboost_tune <- boost_tree("regression",
+                                       # trees       = tune()
+                                       # ,tree_depth = tune()
+                                       # , learn_rate = tune()
+                                       , mtry = tune()
+                                       , stop_iter = 20
+                                       ) %>% 
+    set_engine('catboost'
+               # , early_stopping_rounds = 20
+               , thread_count = 1
+               ) 
+
+wflw_spec_catboost_tune <- workflow() %>% 
+    add_model(model_spec_catboost_tune) %>% 
+    add_recipe(recipe_spec %>% step_rm(date))
+
+parallel_start(1:4, .method = "future")
+
+set.seed(69)
+start <- Sys.time()
+tune_results_catboost <- wflw_spec_catboost_tune %>% 
+    tune_race_anova(
+        resamples = resamples_kfold,
+        grid      = 3,
+        control   = control_race(verbose = T, parallel_over = NULL)
+    )
+end <- Sys.time()
+end-start
+
+parallel_stop()
+
+collect_metrics(tune_results_catboost)
+
+wflw_fit_catboost_tuned <- wflw_spec_catboost_tune %>% 
+    finalize_workflow(select_best(tune_results_catboost, metric = "rmse")) %>% 
+    fit(training(splits))
+
+augment(wflw_fit_catboost_tuned, testing(splits)) %>% 
+    metrics(.pred, Return_fwd_21)
