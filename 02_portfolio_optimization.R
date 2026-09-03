@@ -24,6 +24,7 @@ options(scipen = 99)
 model_ensemble_final_forecast <-readRDS("01_save_data/01_saved_forecasts/2026-07-31_model_ensemble_final_forecast.rds")
 acc_by_symbol <- readRDS("02_models/2026-07-31_acc_by_symbol.rds")
 
+# * accuracy by symbol ----
 forecast_acc_symbol <- model_ensemble_final_forecast %>% 
     #filter(date == max(date)) %>% 
     merge(acc_by_symbol)
@@ -38,6 +39,10 @@ pred_avg <- forecast_acc_symbol %>%
     #filter(.value >= 0.006) %>% 
     # mutate(ev = (1-rmse) * mean_pred) %>% # expected value; not technically an ev but attempts to risk-adjust returns
     # slice_max(ev, n = 10) 
+
+pred_avg %>% 
+    slice_max(mean_pred, n = 10) %>% 
+    arrange(desc(mean_pred))
 
 stock_picks <- pred_avg %>% 
     slice_max(mean_pred, n = 10) %>% 
@@ -54,10 +59,10 @@ stock_picks <- pred_avg %>%
 #     pull(symbol)
 
 stock_picks <- forecast_acc_symbol %>%
-  # filter(date == max(date) & .value > 0) %>%
-    slice_min(synth_acc, n = 80) %>%
+    filter(date == max(date)) |> 
+    slice_min(rmse, n = 100) %>%
     slice_max(.value, n = 10) %>%
-    #select(symbol, date, .value, rmse, rsq, ev) |> 
+    select(symbol, date, .value, rmse, rsq, synth_acc) |> 
     arrange(symbol) |> 
     pull(symbol)
 

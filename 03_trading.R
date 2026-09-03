@@ -65,16 +65,14 @@ stock_picks <- forecast_acc_symbol %>%
     filter(.key == 'prediction') %>% 
     summarise(mean_pred = mean(.value), .by = symbol) %>% 
     arrange(desc(mean_pred)) %>% 
-    merge(acc_by_symbol) %>% 
-    #filter(.value >= 0.006) %>% 
-    # mutate(ev = (1-rmse) * mean_pred) %>% # expected value; not technically an ev but attempts to risk-adjust returns
-    # slice_max(ev, n = 10) %>% 
+    merge(acc_by_symbol)  |> 
     slice_max(mean_pred, n = 10) %>% 
+    arrange(symbol) |> 
     pull(symbol)
 
 # IBrokers connection ----
 # requires an open trader workstation and an active api connection
-tws = twsConnect(port = 7497, clientId = 11) # paper trading port 7497; live 7496
+tws = twsConnect(port = 7496, clientId = 11) # paper trading port 7497; live 7496
 isConnected(tws)
 
 # Portfolio query ----
@@ -151,7 +149,7 @@ stocks_table[,target_shares := round((port_value/length(stock_picks))/lastPrice)
 stocks_table[,.(value = lastPrice*target_shares)]
 
 # ** OPTION 2 optimization weights ----
-port_opt <- readRDS("C:/Users/sdben/OneDrive/Professional/Training/R/XX - Practice/04-Financial/quant_trading_R/01_save_data/02_portfolios/2026-07-31_port_opt.rds")
+# port_opt <- readRDS("C:/Users/sdben/OneDrive/Professional/Training/R/XX - Practice/04-Financial/quant_trading_R/01_save_data/02_portfolios/2026-07-31_port_opt.rds")
 opt_weights <- extractWeights(port_opt) %>%
     enframe() %>%
     rename("weight"="value") 
@@ -235,8 +233,7 @@ order_function_mkt <- function(actions_table, tws) {
 }
 
 # * Bracket order function ----
-# includes logging of the order ID for future canceling of the stop and limit orders if they do not execute
-
+# simple bracket without logging, need to cancel exisitng orders before submitting this
 order_function_bracket <- function(actions_table, tws) {
     
     for (i in 1:nrow(actions_table)) {
@@ -244,11 +241,6 @@ order_function_bracket <- function(actions_table, tws) {
         symbol <- actions_table[i, symbol]
         action <- toupper(actions_table[i, action])
         qty    <- actions_table[i, qty]
-        
-        # Initialize log field if missing
-        if (!"log" %in% names(actions_table)) {
-            actions_table[, log := ""]
-        }
         
         # If BUY → create bracket order
         if (action == "BUY") {
@@ -258,8 +250,6 @@ order_function_bracket <- function(actions_table, tws) {
             
             # Parent order (market buy)
             parent_id <- as.numeric(reqIds(tws))
-            tp_id     <- parent_id + 1
-            sl_id     <- parent_id + 2
             
             parent <- twsOrder(
                 orderId       = parent_id,
@@ -271,7 +261,7 @@ order_function_bracket <- function(actions_table, tws) {
             
             # Take‑profit limit order
             tp <- twsOrder(
-                orderId       = tp_id,
+                orderId       = parent_id + 1,
                 action        = "SELL",
                 totalQuantity = qty,
                 orderType     = "LMT",
@@ -283,7 +273,7 @@ order_function_bracket <- function(actions_table, tws) {
             
             # Stop‑loss order
             sl <- twsOrder(
-                orderId       = sl_id,
+                orderId       = parent_id + 2,
                 action        = "SELL",
                 totalQuantity = qty,
                 orderType     = "STP",
@@ -298,45 +288,120 @@ order_function_bracket <- function(actions_table, tws) {
             placeOrder(tws, twsSTK(symbol), tp)
             placeOrder(tws, twsSTK(symbol), sl)
             
-            # Store IDs + log
-            actions_table[i, `:=`(
-                parent_id = parent_id,
-                tp_id     = tp_id,
-                sl_id     = sl_id,
-                log       = paste0(
-                    log,
-                    "Placed bracket orders: parent=", parent_id,
-                    " tp=", tp_id,
-                    " sl=", sl_id, "; "
-                )
-            )]
-            
         } else {
             
             # Normal SELL order (no bracket)
-            sell_id <- as.numeric(reqIds(tws))
-            
             placeOrder(
                 twsconn  = tws,
                 Contract = twsSTK(symbol),
-                Order    = twsOrder(sell_id, "SELL", qty, "MKT")
+                Order    = twsOrder(reqIds(tws), "SELL", qty, "MKT")
             )
-            
-            # Log SELL order
-            actions_table[i, `:=`(
-                parent_id = NA_real_,
-                tp_id     = NA_real_,
-                sl_id     = NA_real_,
-                log       = paste0(log, "Placed SELL order: id=", sell_id, "; ")
-            )]
         }
     }
-    
-    return(actions_table)
 }
 
+# includes logging of the order ID for future canceling of the stop and limit orders if they do not execute
+
+# order_function_bracket <- function(actions_table, tws) {
+#     
+#     for (i in 1:nrow(actions_table)) {
+#         
+#         symbol <- actions_table[i, symbol]
+#         action <- toupper(actions_table[i, action])
+#         qty    <- actions_table[i, qty]
+#         
+#         # Initialize log field if missing
+#         if (!"log" %in% names(actions_table)) {
+#             actions_table[, log := ""]
+#         }
+#         
+#         # If BUY → create bracket order
+#         if (action == "BUY") {
+#             
+#             tp_price  <- actions_table[i, limit_price]
+#             sl_price  <- actions_table[i, stop_price]
+#             
+#             # Parent order (market buy)
+#             parent_id <- as.numeric(reqIds(tws))
+#             tp_id     <- parent_id + 1
+#             sl_id     <- parent_id + 2
+#             
+#             parent <- twsOrder(
+#                 orderId       = parent_id,
+#                 action        = "BUY",
+#                 totalQuantity = qty,
+#                 orderType     = "MKT",
+#                 transmit      = FALSE
+#             )
+#             
+#             # Take‑profit limit order
+#             tp <- twsOrder(
+#                 orderId       = tp_id,
+#                 action        = "SELL",
+#                 totalQuantity = qty,
+#                 orderType     = "LMT",
+#                 tif           = "GTC",
+#                 lmtPrice      = tp_price,
+#                 parentId      = parent_id,
+#                 transmit      = FALSE
+#             )
+#             
+#             # Stop‑loss order
+#             sl <- twsOrder(
+#                 orderId       = sl_id,
+#                 action        = "SELL",
+#                 totalQuantity = qty,
+#                 orderType     = "STP",
+#                 tif           = "GTC",
+#                 auxPrice      = sl_price,
+#                 parentId      = parent_id,
+#                 transmit      = TRUE   # last order transmits the whole bracket
+#             )
+#             
+#             # Send all three orders
+#             placeOrder(tws, twsSTK(symbol), parent)
+#             placeOrder(tws, twsSTK(symbol), tp)
+#             placeOrder(tws, twsSTK(symbol), sl)
+#             
+#             # Store IDs + log
+#             actions_table[i, `:=`(
+#                 parent_id = parent_id,
+#                 tp_id     = tp_id,
+#                 sl_id     = sl_id,
+#                 log       = paste0(
+#                     log,
+#                     "Placed bracket orders: parent=", parent_id,
+#                     " tp=", tp_id,
+#                     " sl=", sl_id, "; "
+#                 )
+#             )]
+#             
+#         } else {
+#             
+#             # Normal SELL order (no bracket)
+#             sell_id <- as.numeric(reqIds(tws))
+#             
+#             placeOrder(
+#                 twsconn  = tws,
+#                 Contract = twsSTK(symbol),
+#                 Order    = twsOrder(sell_id, "SELL", qty, "MKT")
+#             )
+#             
+#             # Log SELL order
+#             actions_table[i, `:=`(
+#                 parent_id = NA_real_,
+#                 tp_id     = NA_real_,
+#                 sl_id     = NA_real_,
+#                 log       = paste0(log, "Placed SELL order: id=", sell_id, "; ")
+#             )]
+#         }
+#     }
+#     
+#     return(actions_table)
+# }
+
 # * submit orders THIS IS FOR REAL ----
-order_function(actions_table, tws)
+order_function_bracket(actions_table, tws)
 
 # write order history ----
 actions_table[, date := today()]
