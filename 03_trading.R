@@ -401,6 +401,8 @@ order_function_bracket <- function(actions_table, tws) {
 # }
 
 # * submit orders THIS IS FOR REAL ----
+reqGlobalCancel(tws)
+
 order_function_bracket(actions_table, tws)
 
 # write order history ----

@@ -232,8 +232,12 @@ add_features <- function(prices_dt, price) {
     
     # prices_dt[, Close_SNR_21       := SNR(prices_dt[, .(high, low, price_col)], n = 21)]
     prices_dt[, Close_rel_volatility := 100 - 100 / (1 + frollsd(price_col, n = 10, align = 'right'))]
-    prices_dt[, Close_252_max_diff := price_col/frollmax(price_col, 252, align = 'right')]
-    prices_dt[, Close_252_min_diff := price_col/frollmin(price_col, 252, align = 'right')]
+    prices_dt[, Close_252_max_diff   := price_col/frollmax(price_col, 252, align = 'right')]
+    prices_dt[, Close_252_min_diff   := price_col/frollmin(price_col, 252, align = 'right')]
+    
+    prices_dt[, reward_to_volatility := ((close/lag(close, 5))-1) / frollsd(close, 63)]
+    prices_dt[, mean_reward_vol      := frollmean(reward_to_volatility, 21)]
+    
     prices_dt[, Close_CCI          := CCI(prices_dt[, .(high, low, price_col)])]
     prices_dt[, Close_kst          := KST(price_col)[,"kst"]]
     prices_dt[, Close_kst_signal   := KST(price_col)[,"signal"]]
@@ -242,7 +246,11 @@ add_features <- function(prices_dt, price) {
     # prices_dt[, Close_TRIX         := TRIX(price_col, n = 21, nSig = 9, "EMA", percent = TRUE)[,"TRIX"]]
     prices_dt[, Close_TRIX_signal  := TRIX(price_col, n = 21, nSig = 9, "EMA", percent = TRUE)[,"signal"]]
     prices_dt[, SAR                := SAR(prices_dt[, .(high, low)])]
-    # prices_dt[, SMI                := SMI(prices_dt[, .(high, low, price_col)])[,"SMI"]]
+    prices_dt[, SAR_ratio          := SAR/close]
+    prices_dt[, SAR_rollsd_3       := (SAR - frollmean(SAR, 63))/frollsd(SAR, 63),]
+    prices_dt[, SAR_rollsd_6       := (SAR - frollmean(SAR, 126))/frollsd(SAR, 126),]
+    prices_dt[, SAR_rollsd_12      := (SAR - frollmean(SAR, 252))/frollsd(SAR, 252),]
+# prices_dt[, SMI                := SMI(prices_dt[, .(high, low, price_col)])[,"SMI"]]
     prices_dt[, SMI_signal         := SMI(prices_dt[, .(high, low, price_col)])[,"signal"]]
     prices_dt[, CMF                := CMF(prices_dt[, .(high, low, price_col)], volume)]
     # prices_dt[, EMV                := EMV(prices_dt[, .(high, low)], volume)[,"emv"]]

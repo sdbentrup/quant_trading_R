@@ -4,10 +4,11 @@
 # https://jfin-swufe.springeropen.com/articles/10.1186/s40854-024-00644-0
 # https://www.sciencedirect.com/science/article/pii/S2666827025000143
 # https://drive.google.com/file/d/1uvjBJ9D09T0_sp7kQppWpD-xelJ0KQhc/edit
+# https://www.dynotrading.com/10-best-macd-settings-for-effective-trading/
 
 # ideas:
 # nested forecasting: https://business-science.github.io/modeltime/articles/nested-forecasting.html
-# adam regression: https://business-science.github.io/modeltime/reference/adam_reg.html
+# tabpfn: https://tidyverse.org/blog/2026/03/tabpfn-0-1-0/
 
 # 0.0 Setup ----
 # * packages ----
@@ -42,11 +43,11 @@ library(rstatix)
 library(tidytable)
 
 # Modeling and stock analytics
-library(baguette)
+# library(baguette)
 library(PortfolioAnalytics)
 library(shapviz)
 library(ggthemes)
-library(rvest) # for read_html()
+# library(rvest) # for read_html()
 library(TTR)
 library(xts)
 library(shapviz)
@@ -230,18 +231,18 @@ add_features <- function(prices_dt, price) {
   price_col <- prices_dt[[price]]
   
   # Calculate Indicators
-  prices_dt[, Close_macd_long := MACD(price_col, 50, 200, 30)[, "macd"]]
-  prices_dt[, Close_macd_long_signal := MACD(price_col, 50, 200, 30)[, "signal"]]
-  prices_dt[, Close_macd_short := MACD(price_col, 10, 20, 9, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "macd"]]
-  prices_dt[, Close_macd_short_signal := MACD(price_col, 10, 20, 9, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "signal"]]
+  prices_dt[, Close_macd_long := MACD(price_col, 63, 252, 21)[, "macd"]]
+  prices_dt[, Close_macd_long_signal := MACD(price_col, 63, 252, 21)[, "signal"]]
+  prices_dt[, Close_macd_short := MACD(price_col, 18, 36, 18, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "macd"]]
+  prices_dt[, Close_macd_short_signal := MACD(price_col, 18, 36, 18, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "signal"]]
   # prices_dt[, Close_macd_short := MACD(price_col, 12, 26, 9, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "macd"]]
   # prices_dt[, Close_macd_short_signal := MACD(price_col, 12, 26, 9, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "signal"]]
   prices_dt[, ":=" (
-      Close_macd_long_trend = frollmean(Close_macd_long,21),
-      Close_macd_long_signal_trend = frollmean(Close_macd_long_signal,21),
-      Close_macd_short_trend = frollmean(Close_macd_short,21),
-      Close_macd_short_signal_trend = frollmean(Close_macd_short_signal,21),
-      Close_macd_long_trading_signal = Close_macd_long-Close_macd_long_signal,
+      Close_macd_long_trend           = frollmean(Close_macd_long,63),
+      Close_macd_long_signal_trend    = frollmean(Close_macd_long_signal,63),
+      Close_macd_short_trend          = frollmean(Close_macd_short,63),
+      Close_macd_short_signal_trend   = frollmean(Close_macd_short_signal,63),
+      Close_macd_long_trading_signal  = Close_macd_long-Close_macd_long_signal,
       Close_macd_short_trading_signal = Close_macd_short-Close_macd_short_signal
       )]
   prices_dt[, Close_ema_50_ratio := price_col/EMA(price_col, n = 50)]
@@ -250,8 +251,8 @@ add_features <- function(prices_dt, price) {
   # prices_dt[, Close_oscillator_7_14_28 := ultimateOscillator(prices_dt[, .(high, low, price_col)])]
   prices_dt[, Close_roc_0_1      := ROC(price_col, n = 1)]
   # prices_dt[, Close_roc_0_1_roll := frollmean(Close_roc_0_1, n=21, align = "right", na.rm = T)]
-  prices_dt[, Close_roc_short    := ROC(price_col, n = 5)]
-  prices_dt[, Close_roc_long     := ROC(price_col, n = 63)]
+  prices_dt[, Close_roc_short    := ROC(price_col, n = 21, "discrete")]
+  prices_dt[, Close_roc_long     := ROC(price_col, n = 126, "discrete")]
   prices_dt[, Close_roc_0_1_std_63 := frollsd(Close_roc_0_1, 63, fill = NA, align = "right")]
   # prices_dt[, Close_natr_63      := ATR(prices_dt[,.(high, low, price_col)], n = 63)[,"atr"]/price_col]
   prices_dt[, Close_ATR_63       := ATR(prices_dt[,.(high, low, price_col)], n = 63)[,"atr"]]
@@ -275,6 +276,8 @@ add_features <- function(prices_dt, price) {
   # prices_dt[, Close_TRIX         := TRIX(price_col, n = 20, nSig = 9, "EMA", percent = TRUE)[,"TRIX"]]
   prices_dt[, Close_TRIX_signal  := TRIX(price_col, n = 20, nSig = 9, "EMA", percent = TRUE)[,"signal"]]
   prices_dt[, SAR                := SAR(prices_dt[, .(high, low)])]
+  prices_dt[, SAR_ratio          := SAR/close]
+  prices_dt[, SAR_ratio_std      := (SAR - frollmean(SAR, 63))/frollsd(SAR, 63)]
   prices_dt[, SMI                := SMI(prices_dt[, .(high, low, price_col)])[,"SMI"]]
   prices_dt[, SMI_signal         := SMI(prices_dt[, .(high, low, price_col)])[,"signal"]]
   prices_dt[, CMF                := CMF(prices_dt[, .(high, low, price_col)], volume)]
@@ -1323,7 +1326,7 @@ recipe_spec <- recipe(Return_fwd_21 ~ .,
 # ** short data recipe spec ----
 recipe_spec <- recipe(Return_fwd_21 ~ ., 
                       #data = training(splits)
-                      data = train
+                      data = train_short
                       ) %>% 
     update_role(rowid, new_role = 'identifier') %>% 
     update_role(symbol, new_role = 'symbol') %>%
@@ -1820,18 +1823,18 @@ fcst_test_fit_earth %>%
 # https://bonsai.tidymodels.org/reference/train_catboost.html
 
 model_spec_catboost <- boost_tree("regression",
-                                  trees  = 3000
+                                  trees  = 1000
                                   #,tree_depth = 10
                                   #,learn_rate = 0.01
                                   #,mtry = 0.5
-                                  #,stop_iter = 20
+                                  ,stop_iter = 20
                                   ) %>% 
     set_engine('catboost'
                , eval_metric = "RMSE"
                , thread_count = 7
                # , early_stopping_rounds = 20
-               , od_type       = 'Iter'   # Early stopping
-               , od_wait       = 20
+               # , od_type       = 'Iter'   # Early stopping
+               # , od_wait       = 20
                # boosting_type = "Plain"
                # , counts = FALSE
                ) 
@@ -1854,7 +1857,8 @@ start <- Sys.time()
 wflw_fit_cb_short <- workflow() %>% 
     add_model(model_spec_catboost) %>% 
     add_recipe(recipe_spec %>% step_rm(date)) %>% 
-    fit(train_short)
+    #fit(train_short)
+    fit_cv(resamples_kfold_short)
 end <- Sys.time()
 end-start
 
@@ -1882,18 +1886,32 @@ augment(wflw_fit_cb_short,testing(splits)) %>%
 augment(wflw_fit_cb_short,testing(splits)) %>% 
     rsq(.pred, Return_fwd_21)
 
+augment(wflw_fit_cb_short,testing(splits)) %>%
+    rename(prediction = .pred, 
+           actual     = Return_fwd_21) %>% 
+    mutate(pred_gain   = if_else(prediction > 0, 1, 0),
+           actual_gain = if_else(actual > 0, 1, 0),
+           win         = if_else(pred_gain == actual_gain, 1, 0),
+           pred_fact   = as.factor(pred_gain),
+           actual_fact = as.factor(actual_gain)) |> 
+    summarise(total_wins = sum(win), 
+              winrate = mean(win), 
+              gainers = mean(actual_gain), 
+              lift = mean(win)/mean(actual_gain)) |> 
+    mutate(model = "catboost_untuned")
+
 # ** catboost tuning ----
 # ** Tunable Specification
 
 model_spec_catboost_tune <- boost_tree("regression",
                                        trees       = tune()
-                                       #,tree_depth = tune()
-                                       #,learn_rate = tune()
+                                       ,tree_depth = tune()
+                                       ,learn_rate = tune()
                                        # ,min_n = 20
                                        # ,mtry = 5
                                        , stop_iter = 20
                                        ) %>% 
-    set_engine('catboost')  #counts = F, validation = 0.2
+    set_engine('catboost', thread_count = 2)  #counts = F, validation = 0.2
 
 wflw_spec_catboost_tune <- workflow() %>% 
     add_model(model_spec_catboost_tune) %>% 
@@ -1909,8 +1927,23 @@ tune_results_catboost <- wflw_spec_catboost_tune %>%
         resamples = resamples_kfold_short,
         # param_info = extract_parameter_set_dials(wflw_spec_catboost_tune) %>%
         #     update(trees = trees(range = c(100,2000))),
-        grid = 4,
+        grid = 8,
         control = control_race(verbose = T, parallel_over = NULL)
+    )
+end <- Sys.time()
+end-start
+
+
+set.seed(69)
+start <- Sys.time()
+tune_results_catboost <- wflw_spec_catboost_tune %>% 
+    tune_bayes(
+        # resamples = resamples_kfold,
+        resamples = resamples_kfold_short,
+        # param_info = extract_parameter_set_dials(wflw_spec_catboost_tune) %>%
+        #     update(trees = trees(range = c(100,2000))),
+        # grid = 8,
+        control = control_bayes(verbose = T, parallel_over = NULL)
     )
 end <- Sys.time()
 end-start
@@ -1931,6 +1964,13 @@ wflw_fit_catboost_tuned <- wflw_spec_catboost_tune %>%
     fit(training(splits))
 
 # ** catboost accuracy on testing ----
+augment(wflw_fit_catboost_tuned, testing(splits)) %>% 
+    mutate(error = .pred-Return_fwd_21) %>%
+    summarise(rmse = sqrt(mean(error^2)))
+
+augment(wflw_fit_catboost_tuned, testing(splits)) %>% 
+    metrics(.pred, Return_fwd_21)
+
 calibrate_and_plot(wflw_fit_cb, plot = F)
 calibrate_and_plot(wflw_fit_catboost_tuned, plot = F)
 
@@ -1945,6 +1985,20 @@ catboost_winrate <- fcst_test_fit_catboost %>%
     winrate(model = 'catboost')
 
 catboost_winrate[,.(total_wins = sum(win), winrate = mean(win))]
+
+augment(wflw_fit_catboost_tuned, testing(splits)) %>% 
+    rename(prediction = .pred, 
+       actual     = Return_fwd_21) %>% 
+    mutate(pred_gain   = if_else(prediction > 0, 1, 0),
+           actual_gain = if_else(actual > 0, 1, 0),
+           win         = if_else(pred_gain == actual_gain, 1, 0),
+           pred_fact   = as.factor(pred_gain),
+           actual_fact = as.factor(actual_gain)) |> 
+    summarise(total_wins = sum(win), 
+              winrate = mean(win), 
+              gainers = mean(actual_gain), 
+              lift = mean(win)/mean(actual_gain)) |> 
+    mutate(model = "catboost_tuned")
 
 roc_auc(catboost_winrate, actual_fact, pred_gain)
 recall(catboost_winrate, actual_fact, pred_fact)
@@ -2067,7 +2121,7 @@ model_spec_rf <- rand_forest(
 # workflow
 wflw_spec_rf <- workflow() %>% 
     add_model(model_spec_rf) %>% 
-    add_recipe(recipe_spec_short %>% step_rm(date))
+    add_recipe(recipe_spec %>% step_rm(date))
 
 # Fit
 set.seed(69)
@@ -2432,24 +2486,24 @@ rm(wflw_fit_rf)
 gc()
 
 
-# * Test NEURAL NET ----
+# * Test NEURAL NET brulee ----
 # ** Tuning
 model_spec_nnet <- mlp(
-    hidden_units = 40, #42 showed better RMSE and RSQ on tuning but 30 looks better from plots?
+    hidden_units = 20, #42 showed better RMSE and RSQ on tuning but 30 looks better from plots?
     #hidden_units = c(20,20), #try with multiple layers
     epochs       = 500
+    
 ) %>%
     # set_engine("nnet")
     set_engine("brulee", 
                validation = 0.1, # 10% holdout for early stopping
                stop_iter  = 10
-               ,rate_schedule = "cyclic"
                ) %>% 
     set_mode("regression")
 
 wflw_spec_nnet <- workflow() %>%
     add_model(model_spec_nnet) %>%
-    add_recipe(recipe_spec_short %>% 
+    add_recipe(recipe_spec %>% 
                    step_rm(date) %>% 
                    step_normalize(all_numeric_predictors()))
 
@@ -2463,7 +2517,7 @@ augment(fit_nnet, testing(splits)) %>%
     rmse(.pred, Return_fwd_21)
 
 augment(fit_nnet, testing(splits)) %>% 
-    rsq(.pred, Return_fwd_21)
+    metrics(.pred, Return_fwd_21)
 
 set.seed(69)
 start <- Sys.time()
@@ -3115,6 +3169,56 @@ gc()
 # https://kindling.joshuamarie.com/
 # library(kindling)
 
+model_spec_rnn <- mlp_kindling(
+    mode = "regression",
+    hidden_neurons = c(10, 10),
+    # activations = act_funs(relu, relu),
+    # optimizer = "adam",
+    # learn_rate = 0.001,
+    # penalty = 1e-4,
+    # mixture = 0,
+    # batch_size = 16,
+    epochs = 100,
+    validation_split = 0.2
+    # verbose = FALSE
+    # early_stopping = early_stop(patience = 10L, min_delta = 1e-3, monitor = "train_loss")
+)
+
+wflw_spec_rnn <- workflow() %>%
+    add_recipe(recipe_spec %>% 
+                   step_rm(date) %>% 
+                   step_normalize(all_numeric_predictors())) %>%
+    add_model(model_spec_rnn)
+
+set.seed(101)
+start   <- Sys.time()
+fit_rnn <- wflw_spec_rnn %>% fit(train_short)
+end     <- Sys.time()
+end-start
+
+rnn_pred <- augment(fit_rnn, new_data = testing(splits))
+
+metrics(rnn_pred, truth = Return_fwd_21, estimate = .pred)
+
+# * Test SAINT ----
+# https://brulee.tidymodels.org/reference/brulee_saint.html
+
+set.seed(101)
+start <- Sys.time()
+fit_saint <- brulee_saint(
+    recipe_spec %>% 
+        step_rm(date),
+    data = train_short
+)
+end <- Sys.time()
+end-start
+
+augment(fit_nnet, testing(splits)) %>% 
+    rmse(.pred, Return_fwd_21)
+
+augment(fit_nnet, testing(splits)) %>% 
+    metrics(.pred, Return_fwd_21)
+
 # Modeling explanation ----
 # * feature importance ----
 extract_fit_engine(wflw_fit_lgb_tuned) %>%
@@ -3246,13 +3350,15 @@ fit <- extract_fit_parsnip(wflw_fit_xgboost_tuned)
 fit_names <- fit[["preproc"]][["x_names"]]
 
 df_explain  <- bake( 
-  prep(recipe_spec), 
-  has_role("predictor"),
-  new_data = training(splits)) %>% 
-  select(-date) %>% 
+    prep(recipe_spec), 
+    has_role("predictor"),
+    #new_data = training(splits)
+    new_data = forecast_dt[symbol == "ADSK"]
+    ) %>% 
+    select(-date) %>% 
     select(all_of(fit_names))
 
-shap_values <- fit %>% #extract_fit_engine(wflw_fit_xgboost_tuned) %>% 
+shap_values <- extract_fit_engine(wflw_fit_lgb_tuned) %>% #fit %>% #
   shapviz(X_pred = data.matrix(df_explain), 
           X = df_explain)
 
@@ -3278,18 +3384,23 @@ shap_names <- shap_values %>%
 shap_names %>% tail()
 
 shap_values %>% 
-  sv_dependence(shap_names$name[1], alpha = 0.7) +
-  scale_color_gradient(high = "#ff0d57", low = "#1e88e5")+
-  theme_minimal()
+    sv_dependence(shap_names$name[1], alpha = 0.7) +
+    scale_color_gradient(high = "#ff0d57", low = "#1e88e5")+
+    geom_hline(yintercept = 0)+
+    geom_smooth(method = "gam")+
+    theme_minimal()
 
 shap_values %>% 
-  sv_dependence(shap_names$name[2], alpha = 0.7) +
-  scale_color_gradient(high = "#ff0d57", low = "#1e88e5")+
-  theme_minimal()
+    sv_dependence(shap_names$name[2], alpha = 0.7) +
+    scale_color_gradient(high = "#ff0d57", low = "#1e88e5")+
+    geom_hline(yintercept = 0)+
+    geom_smooth(method = "gam")+
+    theme_minimal()
 
 shap_values %>% 
-  sv_dependence(shap_names$name[7], alpha = 0.7) +
+  sv_dependence(shap_names$name[3], alpha = 0.7) +
   scale_color_gradient(high = "#ff0d57", low = "#1e88e5")+
+    geom_hline(yintercept = 0)+
   geom_smooth(se = F,method = "gam",colour = "gray",linewidth = 1)+
   theme_minimal()
 
@@ -3332,6 +3443,7 @@ shap_values %>%
 shap_values %>% 
     sv_dependence(avars, viridis_args = list(option = "viridis", direction = -1))
 
+shap_values %>% sv_waterfall(21)
 
 # SHAP interactions for fwd return
 shap_values %>%  
