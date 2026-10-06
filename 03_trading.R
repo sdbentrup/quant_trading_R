@@ -26,12 +26,17 @@ library(timetk)
 library(tidyquant)
 library(doParallel)
 
-options(scipen = 999)
+options(scipen = 9999)
 
 # Import data from forecast ----
-#change to the most recent forecast saved
-model_ensemble_final_forecast <- read_rds("01_save_data/01_saved_forecasts/2026-07-31_model_ensemble_final_forecast.rds")
-acc_by_symbol <- read_rds("02_models/2026-07-31_acc_by_symbol.rds")
+forecasts <- list.files(path = "01_save_data/01_saved_forecasts/", pattern = "model_ensemble_final_forecast", full.names = T)
+model_ensemble_final_forecast <- read_rds(max(forecasts))
+
+accuracy <- list.files(path = "02_models/", pattern = "acc_by_symbol", full.names = T)
+acc_by_symbol <- read_rds(max(accuracy))
+
+# model_ensemble_final_forecast <- read_rds("01_save_data/01_saved_forecasts/2026-07-31_model_ensemble_final_forecast.rds")
+# acc_by_symbol <- read_rds("02_models/2026-07-31_acc_by_symbol.rds")
 
 forecast_acc_symbol <- model_ensemble_final_forecast %>% 
     #filter(date == max(date)) %>% 
@@ -51,17 +56,6 @@ model_ensemble_final_forecast %>%
 
 # select the top n stocks
 stock_picks <- forecast_acc_symbol %>% 
-    select(symbol, date, .value, rmse, rsq) %>% 
-    # filter(rmse < 0.05) %>% 
-    # filter(.value > 0) %>% 
-    # slice_min(rmse, n = 80) %>%
-    slice_max(.value, n = 11) %>%
-    # mutate(ev = (1-rmse) * .value) %>% 
-    # slice_max(ev, n = 10) %>% 
-    pull(symbol) %>% 
-    as.character()
-
-stock_picks <- forecast_acc_symbol %>% 
     filter(.key == 'prediction') %>% 
     summarise(mean_pred = mean(.value), .by = symbol) %>% 
     arrange(desc(mean_pred)) %>% 
@@ -72,7 +66,7 @@ stock_picks <- forecast_acc_symbol %>%
 
 # IBrokers connection ----
 # requires an open trader workstation and an active api connection
-tws = twsConnect(port = 7496, clientId = 11) # paper trading port 7497; live 7496
+tws = twsConnect(port = 7496, clientId = 12) # paper trading port 7497; live 7496
 isConnected(tws)
 
 # Portfolio query ----
@@ -150,9 +144,13 @@ stocks_table[,.(value = lastPrice*target_shares)]
 
 # ** OPTION 2 optimization weights ----
 # port_opt <- readRDS("C:/Users/sdben/OneDrive/Professional/Training/R/XX - Practice/04-Financial/quant_trading_R/01_save_data/02_portfolios/2026-07-31_port_opt.rds")
+optimizations <- list.files(path = "01_save_data/02_portfolios/", pattern = "port_opt", full.names = T)
+port_opt      <- read_rds(max(optimizations))
+
 opt_weights <- extractWeights(port_opt) %>%
     enframe() %>%
-    rename("weight"="value") 
+    rename("weight"="value") |> 
+    setDT()
 
 stocks_table <- merge(stocks_table,
                       opt_weights,
@@ -160,7 +158,7 @@ stocks_table <- merge(stocks_table,
                       by.y = "name") %>% 
   setDT()
 
-stocks_table[,target_shares := round((port_value*weight)/lastPrice)]
+stocks_table[,target_shares := round((port_value*.97*weight)/lastPrice, 0)] # set this to 97% to keep some cash and also to prevent trying to buy too many shares and it does strange things
 
 # create table of portfolio ----
 port_table <- data.table(port[,.(symbol,position, marketValue, unrealizedPNL)])
@@ -188,7 +186,7 @@ actions_table[,qty := fifelse(action == "BUY",
 
 actions_table[,":=" (
     limit_price = fifelse(action == "BUY", round(lastPrice * 1.20,2),0),
-    stop_price  = fifelse(action == "BUY", round(lastPrice * 0.9,2),0)
+    stop_price  = fifelse(action == "BUY", round(lastPrice * 0.92,2),0)
 )]
 
 # calculate the new value, for reference only
@@ -294,7 +292,7 @@ order_function_bracket <- function(actions_table, tws) {
             placeOrder(
                 twsconn  = tws,
                 Contract = twsSTK(symbol),
-                Order    = twsOrder(reqIds(tws), "SELL", qty, "MKT")
+                Order    = twsOrder(reqIds(tws), action, qty, "MKT")
             )
         }
     }
@@ -401,7 +399,7 @@ order_function_bracket <- function(actions_table, tws) {
 # }
 
 # * submit orders THIS IS FOR REAL ----
-reqGlobalCancel(tws)
+# reqGlobalCancel(tws)
 
 order_function_bracket(actions_table, tws)
 
@@ -418,13 +416,13 @@ write_rds(actions_history_table, str_glue("03_actions/actions_history_table.rds"
 
 actions_history_table[,.(pl = sum(unrealizedPNL),value = sum(marketValue)),date][,.(date,pl, value, change = ROC(value,1))]
 
-# close the tws session ----
+ # close the tws session ----
 twsDisconnect(tws)
 
 
 # trade a single stock ----
 # define symbol
-symbol <- "BNY"
+symbol <- "WELL"
 
 # get data
 data <- reqHistoricalData(tws, twsSTK(symbol), barSize = "1 min", duration = "1 D")
@@ -439,7 +437,7 @@ lastPrice <- as.numeric(data.dt[which.max(data.dt[, index]), ][, 5])
 cash   <- as.numeric(a[[1]][["CashBalance"]][["value"]])
 
 # calculate number of shares
-qty    <- floor(cash*(.98)/lastPrice)
+qty    <- round((cash*.93)/lastPrice)
 
 # calculate stop loss and take profit prices
 tp_price  <- round(lastPrice*1.20,2)

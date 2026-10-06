@@ -21,8 +21,18 @@ library(plotly)
 
 options(scipen = 99)
 # import data from saved data ----
-model_ensemble_final_forecast <-readRDS("01_save_data/01_saved_forecasts/2026-07-31_model_ensemble_final_forecast.rds")
-acc_by_symbol <- readRDS("02_models/2026-07-31_acc_by_symbol.rds")
+forecasts <- list.files(path = "01_save_data/01_saved_forecasts/", pattern = "model_ensemble_final_forecast", full.names = T)
+model_ensemble_final_forecast <- read_rds(max(forecasts))
+
+accuracy <- list.files(path = "02_models/", pattern = "acc_by_symbol", full.names = T)
+acc_by_symbol <- read_rds(max(accuracy))
+
+# verify files loaded correctly
+max(accuracy)
+max(model_ensemble_final_forecast$date)
+
+# model_ensemble_final_forecast <- readRDS("01_save_data/01_saved_forecasts/2026-07-31_model_ensemble_final_forecast.rds")
+# acc_by_symbol <- readRDS("02_models/2026-07-31_acc_by_symbol.rds")
 
 # * accuracy by symbol ----
 forecast_acc_symbol <- model_ensemble_final_forecast %>% 
@@ -41,16 +51,18 @@ pred_avg <- forecast_acc_symbol %>%
     # slice_max(ev, n = 10) 
 
 pred_avg %>% 
+    filter(rmse <= 0.06) |> 
     slice_max(mean_pred, n = 10) %>% 
     arrange(desc(mean_pred))
 
 stock_picks <- pred_avg %>% 
+    # filter(rmse <= 0.06) |> 
     slice_max(mean_pred, n = 10) %>% 
     arrange(symbol) |> 
     pull(symbol)
 
 # or by last prediction?
-# this seems not to be as reliable as the average and ev method above
+# this seems not to be as reliable as the average and ev method
 # stock_picks <- forecast_acc_symbol %>% 
 #   filter(date == max(date) & .value > 0) %>% 
 #     #slice_min(rmse, n = 80) %>%
@@ -66,8 +78,8 @@ stock_picks <- forecast_acc_symbol %>%
     arrange(symbol) |> 
     pull(symbol)
 
-pred_avg |>
-    filter(mean_pred > 0.01) |> slice_min(rmse, n = 30) |>
+stock_picks <- pred_avg |>
+    filter(mean_pred > 0.01) |> slice_min(rmse, n = 40) |>
     # slice_max(synth_acc, n = 10) %>%
     slice_max(mean_pred, n = 10) %>%
     #select(symbol, date, .value, rmse, rsq, ev) |>
@@ -79,6 +91,7 @@ prices <- tq_get(stock_picks, from = today()-years(4))
 
 # * Review returns by symbol ----
 prices %>%
+    filter(date >= today() - years(1)) |> 
   ggplot(aes(x = date, y = close)) +
   geom_candlestick(aes(open = open, high = high, low = low, close = close),
                    colour_up = "darkgreen", colour_down = "darkred", 
@@ -130,8 +143,8 @@ returns %>%
 # * setup optimization ----
 # global minimum variance long only portfolio
 port_spec <- portfolio.spec(assets = colnames(returns_xts))
-port_spec <- add.constraint(port_spec, type = "weight_sum", min_sum=0.99, max_sum=1.01)
-port_spec <- add.constraint(port_spec, type = "box", min = 0.04, max = 0.22)
+port_spec <- add.constraint(port_spec, type = "weight_sum", min_sum=0.97, max_sum=0.99)
+port_spec <- add.constraint(port_spec, type = "box", min = 0.04, max = 0.25)
 # port_spec <- add.constraint(portfolio = port_spec, type = "long_only") # only positive weights
 # port_spec <- add.constraint(portfolio = port_spec, type="transaction_cost", ptc=0.05/100)
 # port_spec <- add.objective(portfolio = port_spec, type = "risk", name = "StdDev")
@@ -139,7 +152,11 @@ port_spec <- add.constraint(port_spec, type = "box", min = 0.04, max = 0.22)
 
 port_spec <- add.objective(port_spec, type = "return", name = 'mean')
 port_spec <- add.objective(port_spec, type = "risk", name = "ES")
-port_spec <- add.objective(port_spec, type = "risk_budget", name = "ES", min_concentration=TRUE) # for a min-var portfolio use momentsFUN custom.covRob.x
+port_spec <- add.objective(port_spec, type = "risk_budget", name = "ES", min_concentration = TRUE)
+
+port_spec <- add.objective( portfolio = port_spec , type="risk_budget_objective",
+               name="ES", arguments=list(p=0.95, clean="boudt"), 
+               min_concentration=TRUE, enabled=TRUE)
 
 
 # * optimize portfolio ----
@@ -164,6 +181,8 @@ port_opt <- optimize.portfolio(returns_xts,
                                optimize_method = "CVXR",
                                # optimize_method = "ROI",
                                # optimize_method = "DEoptim", traceDE=10,
+                               # optimize_method = c("ROI", "symphony"),
+                               
                                # search_size = 20000,
                                #, "random", "ROI", "ROI_old", "pso", "GenSA","CVXR"
                                # momentFUN = "custom.covRob.Mcd",#"custom.covRob.TSGS","custom.covRob.MM"

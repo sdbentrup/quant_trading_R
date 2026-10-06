@@ -53,6 +53,8 @@ library(TTR)
 library(xts)
 library(shapviz)
 
+options(scipen = 9999)
+
 # * dates ----
 from       <- today() - years(4)-21
 train_date <- today() - years(2)-months(6)
@@ -193,6 +195,7 @@ prices_dt[,(uniqueN(symbol))]
 
 # Engineered indicators ----
 # https://blog.elearnmarkets.com/best-25-technical-indicators/
+# reward_to_volatility is inspired by a technical analysis from IB and is similar to a treynor ratio
 
 # * function for features ----
 add_features <- function(prices_dt, price) {
@@ -222,7 +225,7 @@ add_features <- function(prices_dt, price) {
     prices_dt[, Close_roc_0_1_std_63 := frollsd(Close_roc_0_1, 63, fill = NA, align = "right")]
     prices_dt[, Close_natr_63      := ATR(prices_dt[,.(high, low, price_col)], n = 63)[,"atr"]/price_col]
     prices_dt[, Close_ATR_63       := ATR(prices_dt[,.(high, low, price_col)], n = 63)[,"atr"]]
-    prices_dt[, Close_RSI_trend    := RSI(price_col, n = 14)/RSI(price_col, n = 21)]
+    prices_dt[, Close_RSI_trend    := RSI(price_col, n = 10)/RSI(price_col, n = 21)]
     # prices_dt[, Close_rsi_21       := RSI(price_col, n = 21)]
     prices_dt[, Close_cmo_28       := CMO(price_col, n = 28)]
     prices_dt[, Close_cmo_ma       := EMA(Close_cmo_28, n = 21)]
@@ -399,7 +402,7 @@ rm(prices_base)
 rm(prices_dt)
 rm(prices_features_list)
 rm(data_prepared_dt)
-gc()
+
 
 # 3.0 RECIPE ----
 
@@ -428,7 +431,8 @@ recipe_spec <- recipe(Return_fwd_21 ~ ., data = training(splits)) %>%
 # * RESAMPLES - K-FOLD ----- 
 set.seed(101)
 # resamples_kfold <- training(splits) %>% vfold_cv(v = 5)
-resamples_kfold_short <- train_short %>% vfold_cv(v = 4)
+# resamples_kfold_short <- training(splits) %>% vfold_cv(v = 5)
+resamples_kfold_short <- train_short %>% vfold_cv(v = 5)
 
 # Parallel Processing ----
 # cl <- parallel::makeCluster(2, timeout = 60)
@@ -517,15 +521,16 @@ f_meas(lgboost_winrate, actual_fact, pred_fact)
 conf_mat(lgboost_winrate, actual_fact, pred_fact)
 
 fcst_test_fit_lgb_tuned %>% 
-    filter(symbol == "BDX") %>% 
-  plot_modeltime_forecast(.conf_interval_show = F)
+    filter(symbol == testing_symbol) %>% 
+    group_by(symbol) |> 
+  plot_modeltime_forecast(.conf_interval_show = F, .facet_ncol = 3)
 
 # ** save tune results ----
 write_rds(tune_results_lgb, "02_models/tune_results_lgb.rds")
 rm(tune_results_lgb)
 rm(wflw_spec_lgb_tune) # can recreate spec easily
 
-gc()
+
 
 # 4.2 XGBOOST TUNE ----
 
@@ -572,6 +577,7 @@ end <- Sys.time()
 end-start
 
 # ** Results
+tune_results_xgboost %>% collect_metrics()
 
 tune_results_xgboost %>% 
     show_best(metric = "rmse", n = Inf)
@@ -620,7 +626,7 @@ write_rds(tune_results_xgboost, "02_models/tune_results_xgboost.rds", compress =
 rm(tune_results_xgboost)
 rm(wflw_spec_xgboost_tune) # remove spec to save memory
 
-gc()
+
 
 # 4.3 Prophet XGBoost TUNE ----
 
@@ -719,7 +725,7 @@ write_rds(tune_results_prophet_boost, "02_models/tune_results_prophet_boost.rds"
 rm(tune_results_prophet_boost)
 rm(wflw_spec_prophet_boost_tune) # remove spec to save memory
 
-gc()
+
 
 # 4.4 glmnet TUNE ----
 
@@ -797,7 +803,7 @@ write_rds(tune_results_glmnet, "02_models/tune_results_glmnet.rds")
 rm(tune_results_glmnet)
 rm(wflw_spec_glmnet_tune) # remove spec to save memory
 
-gc()
+
 
 # 4.5 CatBoost ----
 # https://catboost.ai/docs/en/
@@ -822,7 +828,7 @@ wflw_spec_catboost_tune <- workflow() %>%
     add_recipe(recipe_spec %>% step_rm(date))
 
 # ** Tuning
-set.seed(69)
+set.seed(100)
 start <- Sys.time()
 tune_results_catboost <- wflw_spec_catboost_tune %>% 
     tune_race_anova(
@@ -884,7 +890,7 @@ write_rds(tune_results_catboost, "02_models/tune_results_catboost.rds", compress
 rm(tune_results_catboost)
 rm(wflw_spec_catboost_tune) # remove spec to save memory
 
-gc()
+
 
 
 # 4.6 Brulee NNET ----
@@ -946,7 +952,7 @@ fcst_test_fit_nnet %>%
 
 # ** save tune results ----
 rm(wflw_spec_nnet)
-gc()
+
 
 # * Modeling explanation ----
 
@@ -1074,29 +1080,31 @@ shap_names <- shap_values %>%
     mutate(rank = row_number())
 
 shap_values %>% 
-  sv_dependence(shap_names$name[1], alpha = 0.7) +
-  scale_color_gradient(high = "#ff0d57", low = "#1e88e5")+
-  theme_minimal()
+    sv_dependence(shap_names$name[1], alpha = 0.7) +
+    geom_smooth(se = F,method = "gam",colour = "gray",linewidth = 1)+
+    scale_color_gradient(high = "#ff0d57", low = "#1e88e5")+
+    theme_minimal()
 
 shap_values %>% 
-  sv_dependence(shap_names$name[2], alpha = 0.7) +
-  scale_color_gradient(high = "#ff0d57", low = "#1e88e5")+
-  theme_minimal()
+    sv_dependence(shap_names$name[2], alpha = 0.7) +
+    scale_color_gradient(high = "#ff0d57", low = "#1e88e5")+
+    geom_smooth(se = F,method = "gam",colour = "gray",linewidth = 1)+
+    theme_minimal()
 
 shap_values %>% 
-  sv_dependence(shap_names$name[7], alpha = 0.7) +
+    sv_dependence(shap_names$name[7], alpha = 0.7) +
+    scale_color_gradient(high = "#ff0d57", low = "#1e88e5")+
+    geom_smooth(se = F,method = "gam",colour = "gray",linewidth = 1)+
+    theme_minimal()
+
+shap_values %>% 
+  sv_dependence("reward_to_volatility", alpha = 0.7) +
   scale_color_gradient(high = "#ff0d57", low = "#1e88e5")+
   geom_smooth(se = F,method = "gam",colour = "gray",linewidth = 1)+
   theme_minimal()
 
 shap_values %>% 
-  sv_dependence("Close_macd_long_signal_trend", alpha = 0.7) +
-  scale_color_gradient(high = "#ff0d57", low = "#1e88e5")+
-  geom_smooth(se = F,colour = "gray",linewidth = 1)+
-  theme_minimal()
-
-shap_values %>% 
-  sv_dependence("Close_macd_short_signal_trend", alpha = 0.7) +
+  sv_dependence("mean_reward_vol", alpha = 0.7) +
   scale_color_gradient(high = "#ff0d57", low = "#1e88e5")+
   geom_smooth(se = F,colour = "gray",linewidth = 1)+
   theme_minimal()
@@ -1112,6 +1120,7 @@ dvars <- colnames(shap_values$S)[grep("div", colnames(shap_values$S))]
 mvars <- colnames(shap_values$S %>% as_tibble() %>% select(contains("macd")))
 vvars <- colnames(shap_values$S)[grep("WAP", colnames(shap_values$S))]
 avars <- colnames(shap_values$S)[grep("ADX", colnames(shap_values$S))]
+svars <- colnames(shap_values$S)[grep("SAR", colnames(shap_values$S))]
 
 shap_values %>% 
   sv_dependence(vvars, viridis_args = list(option = "viridis", direction = -1))
@@ -1127,6 +1136,10 @@ shap_values %>%
 
 shap_values %>% 
     sv_dependence(avars, viridis_args = list(option = "viridis", direction = -1))
+
+shap_values %>% 
+    sv_dependence(svars, viridis_args = list(option = "viridis", direction = -1))+
+    geom_smooth(method = "lm", se = F)
 
 
 # SHAP interactions for fwd return
@@ -1223,7 +1236,7 @@ forecast_symbols <- acc_by_symbol %>%
     pull(symbol)
 
 # * Forecast Test ----
-gc()
+
 forecast_test <- calibration_tbl %>% 
     modeltime_forecast(
         new_data    = testing(splits),
@@ -1275,7 +1288,8 @@ back_fcst %>%
 forecast_test %>% 
     group_by(symbol) %>%
     # filter(symbol == "AAP") %>% 
-    filter(symbol %in% c("NVDA","GE","AMGN","AMP","CTAS","WELL","MSFT","MMM","IRM","ZTS")) %>%
+    # filter(symbol %in% c("NVDA","GE","AMGN","AMP","CTAS","WELL","MSFT","MMM","IRM","ZTS")) %>%
+    filter(symbol %in% forecast_symbols[1:10]) |> 
     filter(.index >= "2025-09-01") %>% 
     plot_modeltime_forecast(
         .facet_ncol = 2,
@@ -1405,7 +1419,7 @@ model_ensemble_tbl_wt %>%
 
 # 8.0 Ensemble Forecast test ----
 # * Ensemble Forecast ----
-gc()
+
 forecast_ensemble_test_tbl <- model_ensemble_tbl_wt %>% 
     modeltime_forecast(
         new_data = testing(splits),
@@ -1450,7 +1464,7 @@ forecast_ensemble_test_tbl %>%
 # 9.0 Final Forecasting ----
 # * Remove previous individual forecasts to reduce memory (optional) ----
 rm(list = ls(pattern = "fcst_test"))
-gc()
+
 
 # * Refit ----
 data_prepared_clean_dt <- data_prepared_dt_filter %>% 
@@ -1480,12 +1494,12 @@ model_ensemble_final_forecast %>%
   arrange(desc(date)) %>% 
     group_by(symbol) %>% 
     plot_modeltime_forecast(
-        .facet_vars = symbol,
+        #.facet_vars = symbol,
         .facet_ncol = 3,
         .y_intercept = 0,
         .conf_interval_show = F,
         .legend_show = F,
-        .trelliscope = F
+        .trelliscope = T
     )
 
 # * View final forecasts ----
