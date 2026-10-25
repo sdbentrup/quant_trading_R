@@ -54,7 +54,7 @@ library(shapviz)
 
 # * dates ----
 # set dates to allow enough time to generate all of the rolling metrics which may require more than 1 year of data
-from      <- today() - years(4)# - months(1)
+from       <- today() - years(4) - months(3)
 train_date <- today() - years(2)#-months(6)
 
 # * Helping functions ----
@@ -223,136 +223,187 @@ symbols_filtered_list <- symbols_filtered_list[!symbols_filtered_list %in%
 prices_dt <- prices_base[symbol %in% symbols_filtered_list &
                              !is.na(close),]
 
+prices_dt[,(uniqueN(symbol))]
+
 # Engineered indicators ----
 # https://blog.elearnmarkets.com/best-25-technical-indicators/
 
 # * function for features ----
 add_features <- function(prices_dt, price) {
-  price_col <- prices_dt[[price]]
-  
-  # Calculate Indicators
-  prices_dt[, Close_macd_long := MACD(price_col, 63, 252, 21)[, "macd"]]
-  prices_dt[, Close_macd_long_signal := MACD(price_col, 63, 252, 21)[, "signal"]]
-  prices_dt[, Close_macd_short := MACD(price_col, 18, 36, 18, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "macd"]]
-  prices_dt[, Close_macd_short_signal := MACD(price_col, 18, 36, 18, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "signal"]]
-  # prices_dt[, Close_macd_short := MACD(price_col, 12, 26, 9, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "macd"]]
-  # prices_dt[, Close_macd_short_signal := MACD(price_col, 12, 26, 9, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "signal"]]
-  prices_dt[, ":=" (
-      Close_macd_long_trend           = frollmean(Close_macd_long,63),
-      Close_macd_long_signal_trend    = frollmean(Close_macd_long_signal,63),
-      Close_macd_short_trend          = frollmean(Close_macd_short,63),
-      Close_macd_short_signal_trend   = frollmean(Close_macd_short_signal,63),
-      Close_macd_long_trading_signal  = Close_macd_long-Close_macd_long_signal,
-      Close_macd_short_trading_signal = Close_macd_short-Close_macd_short_signal
-      )]
-  prices_dt[, Close_ema_50_ratio := price_col/EMA(price_col, n = 50)]
-  prices_dt[, Close_ema_20_ratio := price_col/EMA(price_col, n = 21)]
-  prices_dt[, Close_ppo_line_12_26 := ((EMA(price_col, 12) - EMA(price_col, 26)) / EMA(price_col, 26)) * 100]
-  # prices_dt[, Close_oscillator_7_14_28 := ultimateOscillator(prices_dt[, .(high, low, price_col)])]
-  prices_dt[, Close_roc_0_1      := ROC(price_col, n = 1)]
-  # prices_dt[, Close_roc_0_1_roll := frollmean(Close_roc_0_1, n=21, align = "right", na.rm = T)]
-  prices_dt[, Close_roc_short    := ROC(price_col, n = 21, "discrete")]
-  prices_dt[, Close_roc_long     := ROC(price_col, n = 126, "discrete")]
-  prices_dt[, Close_roc_0_1_std_63 := frollsd(Close_roc_0_1, 63, fill = NA, align = "right")]
-  # prices_dt[, Close_natr_63      := ATR(prices_dt[,.(high, low, price_col)], n = 63)[,"atr"]/price_col]
-  prices_dt[, Close_ATR_63       := ATR(prices_dt[,.(high, low, price_col)], n = 63)[,"atr"]]
-  # prices_dt[, Close_rsi_10       := RSI(price_col, n = 10)]
-  prices_dt[, Close_RSI_14       := RSI(price_col, n = 14)]
-  prices_dt[, Close_cmo_28       := CMO(price_col, n = 28)]
-  prices_dt[, Close_cmo_ma       := EMA(Close_cmo_28, n = 21)]
-  prices_dt[, Close_cmo_signal   := Close_cmo_28/Close_cmo_ma]
-  # prices_dt[, Close_rolling_126_norm := (price_col - frollmean(price_col, 126)) / frollsd(price_col, 126, align = "right")] #used to be standardize vec
-  # prices_dt[, Close_rolling_std_126 := frollsd(price_col, 126, align = "right")]
-  
-  # prices_dt[, Close_SNR_21       := SNR(prices_dt[, .(high, low, price_col)], n = 21)]
-  prices_dt[, Close_rel_volatility := 100 - 100 / (1 + runSD(price_col, 10))]
-  prices_dt[, Close_252_max_diff := price_col/frollmax(price_col, 252, align = 'right')]
-  prices_dt[, Close_252_min_diff := price_col/frollmin(price_col, 252, align = 'right')]
-  prices_dt[, Close_CCI          := CCI(prices_dt[, .(high, low, price_col)])]
-  prices_dt[, Close_kst          := KST(price_col)[,"kst"]]
-  prices_dt[, Close_kst_signal   := KST(price_col)[,"signal"]]
-  prices_dt[, Close_TDI          := TDI(price_col, n = 20, multiple = 2)[,"tdi"]]
-  prices_dt[, Close_TDI_di       := TDI(price_col, n = 20, multiple = 2)[,"di"]]
-  # prices_dt[, Close_TRIX         := TRIX(price_col, n = 20, nSig = 9, "EMA", percent = TRUE)[,"TRIX"]]
-  prices_dt[, Close_TRIX_signal  := TRIX(price_col, n = 20, nSig = 9, "EMA", percent = TRUE)[,"signal"]]
-  prices_dt[, SAR                := SAR(prices_dt[, .(high, low)])]
-  prices_dt[, SAR_ratio          := SAR/close]
-  prices_dt[, SAR_ratio_std      := (SAR - frollmean(SAR, 63))/frollsd(SAR, 63)]
-  prices_dt[, SMI                := SMI(prices_dt[, .(high, low, price_col)])[,"SMI"]]
-  prices_dt[, SMI_signal         := SMI(prices_dt[, .(high, low, price_col)])[,"signal"]]
-  prices_dt[, CMF                := CMF(prices_dt[, .(high, low, price_col)], volume)]
-  # prices_dt[, EMV                := EMV(prices_dt[, .(high, low)], volume)[,"emv"]]
-  prices_dt[, maEMV              := EMV(prices_dt[, .(high, low)], volume)[,"maEMV"]]
-
-  prices_dt[, Close_ADX_DIp      := ADX(prices_dt[,.(high, low, price_col)])[,"DIp"]]
-  prices_dt[, Close_ADX_DIn      := ADX(prices_dt[,.(high, low, price_col)])[,"DIn"]]
-  prices_dt[, Close_ADX_DX       := ADX(prices_dt[,.(high, low, price_col)])[,"DX"]]
-  prices_dt[, Close_ADX_ADX      := ADX(prices_dt[,.(high, low, price_col)])[,"ADX"]]
-  
-  # relative vigor index
-  prices_dt[,":=" (numSMA = SMA(price_col - open, n = 10), denSMA = SMA(high - low, n = 10))][,":=" (rvi = numSMA/denSMA, rvi_signal = SMA(numSMA/denSMA, 4))]
-  prices_dt[,":=" (numSMA = NULL, denSMA = NULL)]
-  
-  # create indicators for intraday effects and day return
-  # remove intraday are low importance intraday = high/low-1,
-  # prices_dt[, ":=" (HLC_ratio = (high-low)/close
-  #                   #OC_ratio  = (open-close)/close
-  #                   )]
-  
-  # Volume-based indicators
-  # prices_dt[, Vol_ema_21_norm  := EMA(volume, n = 21) / volume]
-  prices_dt[, Vol_roc_0_1      := ROC(volume, n = 1)] # leave this one for other calculations
-  prices_dt[, Vol_roc_0_1_std_63 := frollsd(Vol_roc_0_1, 63, align = "right")]
-  
-  # create indicators based on VWAP
-  prices_dt[, Vol_WAP           := VWAP(price_col, volume)] # only used for ratios, then dropped
-  # prices_dt[, Vol_WAP_log       := log(Vol_WAP)]
-  prices_dt[, Vol_WAP_Close     := Vol_WAP/price_col]
-  prices_dt[, Vol_WAP_EMA_ratio := Vol_WAP/EMA(Vol_WAP, n = 21)] # only used for ratios, then dropped
-  # prices_dt[, Vol_WAP_EMA_norm  := standardize_vec(EMA(Vol_WAP, n = 21))]
-  # prices_dt[, Vol_WAP_EMA_ratio := Vol_WAP/Vol_WAP_EMA]
-  prices_dt[, Vol_WAP_ROC       := ROC(Vol_WAP, n = 21)]
-  
-  # standardize VWAP by 252 days
-  prices_dt[, Vol_WAP_norm      := (Vol_WAP - frollmean(Vol_WAP, n = 252, align = "right"))/frollsd(Vol_WAP, n = 252, align = "right")]
-  # prices_dt[, Vol_WAP_roll_ratio := Vol_WAP/Vol_WAP_norm_roll]
-  
-  prices_dt[, ':=' (Vol_WAP = NULL 
-                    #,Vol_WAP_EMA = NULL
-                    )]
-  
-  #prices_dt[, Vol_OBV_standard := standardize_vec(OBV(price_col, volume))]
-  prices_dt[, Vol_OBV       := OBV(price_col, volume)]
-  prices_dt[, Vol_OBV_std   := (Vol_OBV - frollmean(Vol_OBV, n = 126, align = 'right'))/frollsd(Vol_OBV, n = 126, align = 'right')]
-  prices_dt[, Vol_OBV_trend := ROC(Vol_OBV, n = 10)]
-  prices_dt[, Vol_OBV       := NULL]
-  
-  prices_dt[, Vol_MFI_21 := MFI(prices_dt[,.(high, low, close)], volume, n = 21)]
-  
-  # Momentum
-  prices_dt[, `:=`(
-    Close_lag_1   = data.table::shift(price_col, n = 1),
-    Close_lag_21  = data.table::shift(price_col, n = 21),
-    Close_lag_252 = data.table::shift(price_col, n = 252)
-  )]
-  
-  prices_dt[, Close_momentum_21_252_126 := ((Close_lag_21 / Close_lag_252 - 1) - (Close_lag_1 / Close_lag_21 - 1))/frollsd(Close_roc_0_1, 126, align = "right")]
-
-  # Z-score features
-  prices_dt[, Close_zscore_126 := (price_col - frollmean(price_col, 126, align = "right")) / frollsd(price_col, 126, align = "right")]
-  
-  prices_dt[, ":=" (Close_roc_0_1 = NULL, 
-                    Vol_roc_0_1   = NULL)]
-  
-  # Efficiently compute lead values & forward returns without loops
-  T <- c(5, 10, 21)
-  lead_cols   <- paste0("Close_lead_", T)
-  return_cols <- paste0("Return_fwd_", T)
-  
-  prices_dt[, (lead_cols) := lapply(T, function(t) data.table::shift(price_col, -t))]
-  prices_dt[, (return_cols) := lapply(lead_cols, function(col) (get(col) / price_col) - 1)]
-  
-  return(prices_dt)
+    price_col <- prices_dt[[price]]
+    
+    # Calculate Indicators
+    prices_dt[, Close_macd_long         := MACD(price_col, 63, 252, 21)[, "macd"]]
+    prices_dt[, Close_macd_long_signal  := MACD(price_col, 63, 252, 21)[, "signal"]]
+    prices_dt[, Close_macd_short        := MACD(price_col, 19, 39, 9, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "macd"]]
+    prices_dt[, Close_macd_short_signal := MACD(price_col, 19, 39, 9, list(list(EMA, wilder=TRUE),list(EMA, wilder=TRUE),list(EMA, wilder=TRUE)))[, "signal"]]
+    prices_dt[, ":=" (
+        Close_macd_long_trend           = frollmean(Close_macd_long, 63),
+        Close_macd_long_signal_trend    = frollmean(Close_macd_long_signal, 63),
+        Close_macd_short_trend          = frollmean(Close_macd_short, 63),
+        Close_macd_short_signal_trend   = frollmean(Close_macd_short_signal, 63),
+        Close_macd_long_trading_signal  = Close_macd_long-Close_macd_long_signal,
+        Close_macd_short_trading_signal = Close_macd_short-Close_macd_short_signal
+    )]
+    prices_dt[, Close_ema_63_ratio := price_col/EMA(price_col, n = 63)]
+    # prices_dt[, Close_ema_21_ratio := price_col/EMA(price_col, n = 21)]
+    prices_dt[, Close_ppo_line_12_26 := ((EMA(price_col, 12) - EMA(price_col, 26)) / EMA(price_col, 26)) * 100]
+    prices_dt[, Close_oscillator   := ultimateOscillator(prices_dt[, .(high, low, price_col)])]
+    
+    
+    # momentum indicators
+    prices_dt[, Close_ret_21       := log(price_col) - shift(log(price_col), 21)]
+    prices_dt[, Close_ret_63       := log(price_col) - shift(log(price_col), 63)]
+    prices_dt[, Close_ret_126      := log(price_col) - shift(log(price_col), 126)]
+    
+    prices_dt[, ret_1d             := log(price_col / shift(price_col, 1))]
+    
+    prices_dt[, Ret_vol_21         := frollsd(ret_1d, 21)]
+    prices_dt[, Ret_vol_63         := frollsd(ret_1d, 63)]
+    prices_dt[, Ret_vol_126        := frollsd(ret_1d, 126)]
+    
+    prices_dt[, momentum_21        := Close_ret_21 / Ret_vol_21]
+    prices_dt[, momentum_63        := Close_ret_63 / Ret_vol_63]
+    prices_dt[, momentum_126       := Close_ret_126 / Ret_vol_126]
+    
+    # acceleration indicator
+    prices_dt[, momentum_accel     := Close_ret_63 - Close_ret_126]
+    
+    # prices_dt[, mom_63             := ROC(price_col, n = 63, type = "continuous") / frollsd(diff(log(price_col)), 63)]
+    
+    # prices_dt[, Close_roc_0_1_norm := (Close_roc_0_1 - frollmean(Close_roc_0_1, 63))/Close_roc_0_1_std_63]
+    prices_dt[, Close_natr_63      := ATR(prices_dt[,.(high, low, price_col)], n = 63)[,"atr"]/price_col]
+    prices_dt[, Close_ATR_63       := ATR(prices_dt[,.(high, low, price_col)], n = 63)[,"atr"]]
+    prices_dt[, Close_RSI_trend    := RSI(price_col, n = 10)/RSI(price_col, n = 21)]
+    prices_dt[, Close_rsi_21       := RSI(price_col, n = 21)]
+    prices_dt[, Close_cmo_28       := CMO(price_col, n = 28)]
+    prices_dt[, Close_cmo_ma       := EMA(Close_cmo_28, n = 21)]
+    prices_dt[, Close_cmo_signal   := Close_cmo_28/Close_cmo_ma]
+    prices_dt[, Close_DVI          := DVI(price_col)[,"dvi"]]
+    # prices_dt[, Close_DVI_mag      := DVI(price_col)][,"dvi.mag"]
+    # prices_dt[, Close_DVI_str      := DVI(price_col)][,"dvi.str"]
+    # prices_dt[, Close_rolling_126_norm := (price_col - frollmean(price_col, 126)) / frollsd(price_col, 126, align = "right")] #used to be standardize vec
+    # prices_dt[, Close_rolling_std_126 := frollsd(price_col, 126, align = "right")]
+    
+    prices_dt[, Close_SNR            := SNR(prices_dt[, .(high, low, price_col)], n = 21)]
+    prices_dt[, Close_rel_volatility := 100 - 100 / (1 + frollsd(price_col, n = 10, align = 'right'))]
+    prices_dt[, Close_252_max_diff   := price_col/frollmax(price_col, 252, align = 'right')]
+    prices_dt[, Close_252_min_diff   := price_col/frollmin(price_col, 252, align = 'right')]
+    
+    prices_dt[, reward_to_volatility := ((close/lag(close, 5))-1) / frollsd(close, 63)]
+    prices_dt[, mean_reward_vol      := frollmean(reward_to_volatility, 21)]
+    
+    prices_dt[, reward_to_volatility := NULL]
+    
+    prices_dt[, Close_CCI          := CCI(prices_dt[, .(high, low, price_col)])]
+    prices_dt[, Close_kst          := KST(price_col)[,"kst"]]
+    prices_dt[, Close_kst_signal   := KST(price_col)[,"signal"]]
+    prices_dt[, Close_TDI          := TDI(price_col, n = 21, multiple = 2)[,"tdi"]]
+    prices_dt[, Close_TDI_di       := TDI(price_col, n = 21, multiple = 2)[,"di"]]
+    prices_dt[, Close_TRIX         := TRIX(price_col, n = 21, nSig = 9, "EMA", percent = TRUE)[,"TRIX"]]
+    prices_dt[, Close_TRIX_signal  := TRIX(price_col, n = 21, nSig = 9, "EMA", percent = TRUE)[,"signal"]]
+    prices_dt[, SAR                := SAR(prices_dt[, .(high, low)])]
+    prices_dt[, SAR_ratio          := SAR/close]
+    prices_dt[, SAR_rollsd_3       := (SAR - frollmean(SAR, 63))/frollsd(SAR, 63),]
+    prices_dt[, SAR_rollsd_6       := (SAR - frollmean(SAR, 126))/frollsd(SAR, 126),]
+    prices_dt[, SAR_rollsd_12      := (SAR - frollmean(SAR, 252))/frollsd(SAR, 252),]
+    prices_dt[, SMI                := SMI(prices_dt[, .(high, low, price_col)])[,"SMI"]]
+    prices_dt[, SMI_signal         := SMI(prices_dt[, .(high, low, price_col)])[,"signal"]]
+    prices_dt[, CMF                := CMF(prices_dt[, .(high, low, price_col)], volume)]
+    # prices_dt[, EMV                := EMV(prices_dt[, .(high, low)], volume)[,"emv"]]
+    # prices_dt[, maEMV              := EMV(prices_dt[, .(high, low)], volume)[,"maEMV"]]
+    
+    prices_dt[, dn                 := keltnerChannels(prices_dt[, .(high, low, price_col)])[,"dn"]]
+    prices_dt[, up                 := keltnerChannels(prices_dt[, .(high, low, price_col)])[,"up"]]
+    
+    prices_dt[,":=" (
+        up_dn_ratio = up/dn,
+        dn_ratio = dn/close,
+        up_ratio = up/close)]
+    
+    prices_dt[,":=" (
+        dn_norm_6  = (dn - frollmean(dn, 21*6))/frollsd(dn, 21*6),
+        up_norm_6  = (up - frollmean(dn, 21*6))/frollsd(up, 21*6),
+        dn_norm_12 = (dn - frollmean(dn, 21*12))/frollsd(dn, 21*12),
+        up_norm_12 = (up - frollmean(dn, 21*12))/frollsd(up, 21*12)
+    ),]
+    
+    
+    prices_dt[,":=" (
+        up = NULL,
+        dn = NULL)]
+    
+    prices_dt[, Close_ADX_DIp      := ADX(prices_dt[,.(high, low, price_col)])[,"DIp"]]
+    prices_dt[, Close_ADX_DIn      := ADX(prices_dt[,.(high, low, price_col)])[,"DIn"]]
+    prices_dt[, Close_ADX_DX       := ADX(prices_dt[,.(high, low, price_col)])[,"DX"]]
+    prices_dt[, Close_ADX_ADX      := ADX(prices_dt[,.(high, low, price_col)])[,"ADX"]]
+    
+    # relative vigor index
+    prices_dt[,":=" (numSMA = SMA(price_col - open, n = 10), 
+                     denSMA = SMA(high - low, n = 10))][,":=" (rvi_signal = SMA(numSMA/denSMA, 4))] # rvi = numSMA/denSMA, 
+    prices_dt[,":=" (numSMA = NULL, denSMA = NULL)]
+    
+    # create indicators for intraday effects and day return
+    # remove intraday are low importance intraday = high/low-1,
+    # prices_dt[, ":=" (HLC_ratio = (high-low)/close,
+    #                   OC_ratio  = (open-close)/close)]
+    
+    # Volume-based indicators
+    # prices_dt[, Vol_ema_21_norm  := EMA(volume, n = 21) / volume]
+    prices_dt[, Vol_roc_0_1      := ROC(volume, n = 1)] # leave this one for other calculations
+    prices_dt[, Vol_roc_0_1_std_63 := frollsd(Vol_roc_0_1, 63, align = "right")]
+    
+    # create indicators based on VWAP
+    prices_dt[, Vol_WAP           := VWAP(price_col, volume)] # only used for ratios, then dropped
+    # prices_dt[, Vol_WAP_log       := log(Vol_WAP)]
+    # prices_dt[, Vol_WAP_Close     := Vol_WAP/price_col]
+    prices_dt[, Vol_WAP_EMA_ratio := Vol_WAP/EMA(Vol_WAP, n = 21)]
+    # prices_dt[, Vol_WAP_EMA       := EMA(Vol_WAP, n = 21)] # only used for ratios, then dropped
+    # prices_dt[, Vol_WAP_EMA_norm  := standardize_vec(EMA(Vol_WAP, n = 21))]
+    # prices_dt[, Vol_WAP_EMA_ratio := Vol_WAP/Vol_WAP_EMA]
+    prices_dt[, Vol_WAP_ROC       := ROC(Vol_WAP, n = 63)]
+    
+    # standardize VWAP by 252 days
+    prices_dt[, Vol_WAP_std       := (Vol_WAP - frollmean(Vol_WAP, n = 126, align = "right"))/frollsd(Vol_WAP, n = 126, align = "right")]
+    # prices_dt[, Vol_WAP_roll_ratio := Vol_WAP/Vol_WAP_norm_roll]
+    
+    prices_dt[, ':=' (Vol_WAP = NULL 
+                      # ,Vol_WAP_EMA = NULL
+    )]
+    
+    #prices_dt[, Vol_OBV_standard := standardize_vec(OBV(price_col, volume))]
+    prices_dt[, Vol_OBV       := OBV(price_col, volume)]
+    prices_dt[, Vol_OBV_std   := (Vol_OBV - frollmean(Vol_OBV, n = 126, align = 'right'))/frollsd(Vol_OBV, n = 126, align = 'right')]
+    prices_dt[, Vol_OBV_ratio := Vol_OBV / frollmean(Vol_OBV, n = 126, align = 'right')]
+    prices_dt[, Vol_OBV       := NULL]
+    
+    prices_dt[, Vol_MFI_21    := MFI(prices_dt[,.(high, low, close)], volume, n = 21)]
+    
+    # quant science Momentum
+    prices_dt[, `:=`(
+        Close_lag_1   = data.table::shift(price_col, n = 1),
+        Close_lag_21  = data.table::shift(price_col, n = 21),
+        Close_lag_252 = data.table::shift(price_col, n = 252)
+    )]
+    
+    prices_dt[, Close_roc_0_1             := ROC(price_col, n = 1)]
+    prices_dt[, Close_momentum_21_252_126 := ((Close_lag_21 / Close_lag_252 - 1) - (Close_lag_1 / Close_lag_21 - 1))/frollsd(Close_roc_0_1, 126, align = "right")]
+    
+    # Z-score features
+    prices_dt[, Close_zscore_126 := (price_col - frollmean(price_col, 126, align = "right")) / frollsd(price_col, 126, align = "right")]
+    
+    prices_dt[, ":=" (Close_roc_0_1 = NULL, 
+                      Vol_roc_0_1   = NULL)]
+    
+    # Efficiently compute lead values & forward returns without loops
+    T <- c(5, 10, 21)
+    lead_cols   <- paste0("Close_lead_", T)
+    return_cols <- paste0("Return_fwd_", T)
+    
+    prices_dt[, (lead_cols) := lapply(T, function(t) data.table::shift(price_col, -t))]
+    prices_dt[, (return_cols) := lapply(lead_cols, function(col) (get(col) / price_col) - 1)]
+    
+    return(prices_dt)
 }
 
 # * Apply function ----
@@ -1619,6 +1670,62 @@ rm(wflw_spec_xgboost_tune) # remove spec to save memory
 
 gc()
 
+# ** untuned xgb for comparison ----
+
+set.seed(101)
+start <- Sys.time()
+xgb_untuned <- boost_tree(
+    "regression",
+    trees          = 1000, 
+    stop_iter      = 30
+) %>% 
+    set_engine('xgboost', 
+               counts = F, 
+               nthread =  -1, 
+               #tree_method = "hist",
+               validation = 0.1) |> 
+    fit(Return_fwd_21 ~ . -rowid -symbol -date, 
+        data = training(splits))
+end <- Sys.time()
+end-start
+
+augment(xgb_untuned, testing(splits)) |> metrics(.pred, Return_fwd_21)
+
+fcst_test_xgb_untuned <- modeltime_table(xgb_untuned) %>% 
+    modeltime_calibrate(new_data = testing(splits), id = "symbol") %>% 
+    modeltime_forecast(actual_data = data_prepared_dt_filter, 
+                       new_data    = testing(splits),
+                       keep_data   = T,
+                       conf_by_id  = T)
+
+xgb_untuned_winrate <- fcst_test_xgb_untuned %>%
+    winrate(model = "xgboost_untuned") 
+
+xgb_untuned_winrate[,.(total_wins = sum(win), winrate = mean(win), gainers = mean(actual_gain), lift = mean(win)/mean(actual_gain))]
+
+bind_rows(xgb_untuned_winrate[,.(total_wins = sum(win), winrate = mean(win), gainers = mean(actual_gain), lift = mean(win)/mean(actual_gain))], 
+          rf_winrate[,.(total_wins = sum(win), winrate = mean(win), gainers = mean(actual_gain), lift = mean(win)/mean(actual_gain))])
+
+fcst_test_xgb_untuned %>% 
+    filter(symbol == testing_symbol) %>% 
+    plot_modeltime_forecast(.conf_interval_show = F)
+
+modeltime_table(xgb_untuned, wflw_fit_rf_final) %>% 
+    modeltime_calibrate(new_data = testing(splits), id = "symbol") |> 
+    modeltime_accuracy(new_data = testing(splits))
+
+extract_fit_engine(xgb_untuned) %>%
+    xgboost::xgb.importance(model = .) %>%
+    as_tibble() %>% View()
+slice_max(Gain, n = 20) %>% 
+    mutate(Feature = as_factor(Feature) %>% fct_rev()) %>% 
+    ggplot(aes(x = Gain, y = Feature, fill = Feature))+
+    geom_col(alpha = 0.7)+
+    scale_fill_tq()+
+    theme_few()+
+    theme(legend.position = "none")+
+    ggtitle("XGBoost Feature Importance")
+
 # * Prophet XGBoost TUNE ----
 
 # ** Tunable Specification
@@ -2116,7 +2223,7 @@ model_spec_rf <- rand_forest(
     "regression",
     # trees = 1000, min_n = 1 #mtry = 25, min_n = 25
     ) %>% 
-    set_engine("ranger", importance = 'permutation')#, splitrule  = "extratrees") 
+    set_engine("ranger", importance = 'permutation', num.threads = 6, quantreg = TRUE)#, splitrule  = "extratrees") 
 
 # workflow
 wflw_spec_rf <- workflow() %>% 
@@ -2133,6 +2240,8 @@ wflw_fit_rf_cv <- wflw_spec_rf %>%
 end_r <- Sys.time()
 end_r-start_r
 
+collect_metrics(wflw_fit_rf_cv)
+
 # finalize RF
 wflw_fit_rf_final <- wflw_spec_rf %>% 
     finalize_workflow(select_best(wflw_fit_rf_cv, metric = "rmse")) %>%
@@ -2146,10 +2255,43 @@ calibrate_and_plot(
     plot = FALSE
 )
 
+# test ranger directly
+library(ranger)
+
+start <- Sys.time()
+ranger <- ranger(Return_fwd_21 ~ . -rowid -symbol -date, data = training(splits), importance = 'permutation', num.threads = 6, quantreg = TRUE)
+end <- Sys.time()
+end-start
+
+preds <- predict(ranger, testing(splits))
+
+cbind(testing(splits), .pred = preds$predictions) |> 
+    metrics(.pred, Return_fwd_21)
+
+ranger %>% 
+    ranger::importance() %>% 
+    enframe() %>% 
+    mutate(rel_importance = value/sum(value)) %>% 
+    slice_max(order_by = value, n = 20) %>% 
+    mutate(Feature = as.factor(name) %>% fct_reorder(.x = rel_importance)) %>%
+    plot_ly(x = ~rel_importance,
+            y = ~Feature,
+            alpha = 0.7,
+            color = ~Feature,
+            type = 'bar',
+            colors = 'Dark2') %>% 
+    layout(title = "Random Forest Feature Importance",
+           showlegend = F,
+           yaxis = list(title = ""))
+
+
 # ** test accuracy -----
 augment(wflw_fit_rf_final,testing(splits)) %>% 
     mutate(error = .pred-Return_fwd_21) %>% 
     summarise(rmse = sqrt(mean(error^2)))
+
+augment(wflw_fit_rf_final,testing(splits)) %>% 
+    metrics(.pred, Return_fwd_21)
 
 augment(wflw_fit_rf_final,testing(splits)) %>% 
     rsq(.pred, Return_fwd_21)
